@@ -29,13 +29,23 @@ from collections import namedtuple
 from pathlib import Path
 from urllib.parse import quote
 
-from PyQt5.QtCore import Qt, QObject, pyqtSignal
-from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import Qt, QObject, pyqtSignal, QTimer
+from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton, QComboBox,
     QTextEdit, QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QFrame,
-    QCheckBox,
+    QCheckBox, QStackedWidget,
 )
+
+
+# ── 화이트리스트 (시즌 참가 채널 UUID) — 원격 fetch ────────────────────────────
+# 시즌 중 스트리머 추가/삭제는 이 JSON 만 커밋하면 됨 (exe 재빌드 불필요). URL 바꿀 때만 재빌드.
+#  파일 포맷 셋 다 지원 (32자리 hex만 추출):
+#    1) 줄당 하나       UUID / URL / 텍스트 무엇이든. '#' 뒤는 주석
+#    2) JSON 배열       ["uuid", ...]
+#    3) JSON 객체       {"이름":"uuid", ...}  또는  {"whitelist":[...]}
+WHITELIST_URL = "https://raw.githubusercontent.com/t3qquq/StreamerWhitelist/refs/heads/main/streamer%20whitelist.json"
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 
 # ── 로컬 설정 (홈 폴더, exe 옆 아님 -> 권한 문제 회피) ────────────────────────
@@ -252,6 +262,93 @@ class ZomboidAdapter(GameAdapter):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  런처 게이트용 헬퍼: 화이트리스트 / 방송 on-off / PZ 프로세스 감지
+# ═══════════════════════════════════════════════════════════════════════════════
+def parse_whitelist(raw: str) -> set:
+    """원격에서 받은 본문을 32자리 hex UUID 집합으로 파싱. JSON 배열/객체와 줄단위 둘 다 지원."""
+    raw = (raw or "").strip()
+    if raw[:1] == "<":          # 뷰어/로그인 HTML(잘못된 URL·비공개 레포 등)은 즉시 무효 → 캐시 폴백
+        return set()
+    items = []
+    if raw[:1] in "[{":
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                obj = obj.get("whitelist") or obj.get("channels") or list(obj.values())
+            if isinstance(obj, list):
+                items = [str(x) for x in obj]
+        except Exception:
+            items = []
+    if not items:
+        items = raw.splitlines()
+    out = set()
+    for it in items:
+        it = it.split("#", 1)[0].strip()        # 줄 주석 제거
+        u = extract_uuid(it)                     # URL이든 생 UUID든 hex만 뽑음 (소문자)
+        if u:
+            out.add(u)
+    return out
+
+
+async def fetch_whitelist() -> set:
+    """원격 화이트리스트 fetch. 성공하면 config 에 캐시. 실패하면 캐시 폴백(없으면 빈 집합)."""
+    import aiohttp
+    try:
+        timeout = aiohttp.ClientTimeout(total=6)
+        async with aiohttp.ClientSession(headers=UA, timeout=timeout) as s:
+            async with s.get(WHITELIST_URL) as r:
+                raw = await r.text()
+        wl = parse_whitelist(raw)
+        if wl:
+            cfg = load_config(); cfg["whitelist"] = sorted(wl); save_config(cfg)
+            return wl
+    except Exception:
+        pass
+    return set(load_config().get("whitelist", []))   # 네트워크 실패 → 마지막 캐시로 동작
+
+
+async def fetch_live(uuid: str) -> bool:
+    """치지직 공개 API 의 openLive 로 방송 on/off 판정. (19+ 도 openLive 는 공개라 감지됨)"""
+    import aiohttp
+    url = f"https://api.chzzk.naver.com/service/v1/channels/{uuid}"
+    try:
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(headers=UA, timeout=timeout) as s:
+            async with s.get(url) as r:
+                data = await r.json()
+        return bool(((data or {}).get("content") or {}).get("openLive"))
+    except Exception:
+        return False
+
+
+def pz_running() -> bool:
+    """Project Zomboid 클라이언트가 실행 중인지 프로세스 목록으로 확인."""
+    KEY = "projectzomboid"
+    try:                                         # psutil 있으면 우선 (의존성 아님, 있으면 사용)
+        import psutil
+        for p in psutil.process_iter(["name"]):
+            if KEY in (p.info.get("name") or "").lower():
+                return True
+        return False
+    except Exception:
+        pass
+    import subprocess
+    if os.name == "nt":                          # 배포 대상: Windows
+        try:
+            CREATE_NO_WINDOW = 0x08000000        # noconsole exe 에서 콘솔창 안 뜨게
+            out = subprocess.run(["tasklist"], capture_output=True, text=True,
+                                 creationflags=CREATE_NO_WINDOW).stdout.lower()
+            return KEY in out
+        except Exception:
+            return False
+    try:                                         # 개발용 폴백 (mac/linux)
+        out = subprocess.run(["pgrep", "-fil", KEY], capture_output=True, text=True).stdout.lower()
+        return KEY in out
+    except Exception:
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  코어: 수신 워커 (스레드 + asyncio -> Qt 시그널, 플랫폼/게임 중립)
 # ═══════════════════════════════════════════════════════════════════════════════
 class DonationWorker(QObject):
@@ -349,20 +446,49 @@ QPushButton { background:#2b2e36; border:1px solid rgba(255,255,255,0.15); borde
 QPushButton:hover { background:#343843; }
 QPushButton#start { background:#1d9e75; color:#04342c; border:none; font-weight:bold; padding:10px 20px; }
 QPushButton#start:hover { background:#22b384; }
+QPushButton#start:disabled { background:#2b2e36; color:#5f5e5a; border:1px solid rgba(255,255,255,0.12); }
+QPushButton#verify { background:#1d9e75; color:#04342c; border:none; font-weight:bold; padding:10px 24px; }
+QPushButton#verify:hover { background:#22b384; }
+QPushButton#verify:disabled { background:#2b2e36; color:#5f5e5a; border:1px solid rgba(255,255,255,0.12); }
 QPushButton#stop  { background:#a32d2d; color:#ffe; border:none; font-weight:bold; padding:10px 20px; }
 QPushButton#link  { background:transparent; border:none; color:#85b7eb; padding:2px; }
 QCheckBox { color:#cfd0d4; font-size:12px; }
 QLabel#muted { color:#9a9ca3; font-size:12px; }
 QLabel#hint  { color:#6f7178; font-size:11px; }
 QLabel#tier  { background:#2b2e36; border-radius:6px; padding:7px 10px; font-size:12px; color:#cfd0d4; }
+QLabel#brand { font-size:13px; font-weight:bold; color:#e8e8ea; }
+QLabel#ver   { color:#6f7178; font-size:11px; }
+QLabel#sect  { font-size:15px; font-weight:bold; color:#e8e8ea; }
+QLabel#welcome { font-size:20px; color:#e8e8ea; }
+QLabel#err   { font-size:18px; font-weight:bold; color:#e24b4a; }
+QLabel#linkok { color:#5dcaa5; font-weight:bold; }
 QFrame#sep { background:rgba(255,255,255,0.08); max-height:1px; }
 """
 
 
+def make_header() -> QWidget:
+    """모든 화면 상단 공용 바: 로고 + '치지직 API Launcher' + 버전."""
+    bar = QWidget()
+    h = QHBoxLayout(bar); h.setContentsMargins(0, 0, 0, 4); h.setSpacing(8)
+    ico = resource_path(ICON_FILE)
+    if os.path.exists(ico):
+        pm = QPixmap(ico)
+        if not pm.isNull():
+            logo = QLabel()
+            logo.setPixmap(pm.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            h.addWidget(logo)
+    brand = QLabel("치지직 API Launcher"); brand.setObjectName("brand")
+    h.addWidget(brand); h.addStretch(1)
+    ver = QLabel("v1.0"); ver.setObjectName("ver")
+    h.addWidget(ver)
+    return bar
+
+
 class MainWindow(QWidget):
-    def __init__(self):
+    def __init__(self, preset=None):
         super().__init__()
-        self.setWindowTitle("퍼펫 API Launcher")
+        self.preset = preset or {}        # 런처에서 넘어온 {channel,uuid,name,autostart}
+        self.setWindowTitle("치지직 API Launcher  v1.1.0")
         ico = resource_path(ICON_FILE)
         if os.path.exists(ico):
             self.setWindowIcon(QIcon(ico))
@@ -372,23 +498,34 @@ class MainWindow(QWidget):
         self.cfg = load_config()
         self._build()
         self._restore()
+        if self.preset.get("autostart"):
+            ch = self.preset.get("channel", "")
+            if ch:
+                self.channel_input.setText(ch)
+            QTimer.singleShot(300, self._start)   # 창 뜨고 나서 워커 시작 (방송은 이미 라이브 확인됨)
 
     def _build(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(10)
 
+
         title = QLabel("치지직 → 좀보이드 후원연동")
         title.setStyleSheet("font-size:15px; font-weight:bold;")
         root.addWidget(title)
 
-        # 채널
-        root.addWidget(self._muted("치지직 채널  —  URL · 채널명 · UUID 아무거나"))
+        # 채널 — 런처에서 넘어왔으면 입력칸 대신 '연결됨' 라벨로 잠금
         self.channel_input = QLineEdit()
         self.channel_input.setPlaceholderText("https://chzzk.naver.com/live/…  또는  채널명")
-        root.addWidget(self.channel_input)
         self.channel_state = QLabel(" "); self.channel_state.setObjectName("muted")
-        root.addWidget(self.channel_state)
+        if self.preset.get("name"):
+            conn = QLabel(f"채널 연결됨: {self.preset['name']}"); conn.setObjectName("linkok")
+            root.addWidget(conn)
+            self.channel_input.hide(); self.channel_state.hide()
+        else:
+            root.addWidget(self._muted("치지직 채널  —  URL · 채널명 · UUID 아무거나"))
+            root.addWidget(self.channel_input)
+            root.addWidget(self.channel_state)
 
         # 경로
         root.addWidget(self._muted("rewards.txt 경로"))
@@ -593,12 +730,248 @@ class MainWindow(QWidget):
         self.log.append(f"<span style='color:#6f7178'>{ts}</span>  {msg}")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  런처 게이트: 채널확인 → 화이트리스트 → 방송 → PZ → 연동시작 → 메인창
+# ═══════════════════════════════════════════════════════════════════════════════
+class LauncherCore(QObject):
+    """게이트용 비동기 워커. resolve/화이트리스트 검증 + 방송·PZ 폴링을 한 루프에서 돌린다."""
+    resolved = pyqtSignal(str, str)   # uuid, name
+    invalid  = pyqtSignal()           # 파싱 실패 or 화이트리스트 미등재
+    live     = pyqtSignal(bool)       # 방송 on/off
+    pz       = pyqtSignal(bool)       # PZ 실행 여부
+
+    def __init__(self):
+        super().__init__()
+        self.loop = None
+        self._wl = None
+        self._uuid = None
+        self._polling = False
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        self._ready.wait(2)
+
+    def _run(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.loop.call_soon(self._ready.set)
+        self.loop.run_forever()
+
+    def _submit(self, coro):
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    # --- 채널 확인 (확인 버튼) ---
+    def verify(self, text):
+        self._submit(self._verify(text))
+
+    async def _ensure_wl(self):
+        if not self._wl:                       # 비어있으면(실패 캐시 포함) 다음 시도 때 재요청
+            self._wl = await fetch_whitelist()
+        return self._wl or set()
+
+    async def _verify(self, text):
+        src = ChzzkpySource()                  # resolve 는 기존 어댑터 재사용
+        try:
+            uuid, name = await src.resolve_channel(text)
+        except Exception:
+            uuid, name = None, ""
+        wl = await self._ensure_wl()
+        if uuid and uuid in wl:                # wl 비었으면(=로드 실패) 전원 차단 = fail-closed
+            self.resolved.emit(uuid, name or "")
+        else:
+            self.invalid.emit()
+
+    # --- 방송 / PZ 폴링 (체크리스트) ---
+    def start_poll(self, uuid):
+        self._uuid = uuid
+        if not self._polling:
+            self._submit(self._poll())
+
+    async def _poll(self):
+        self._polling = True
+        while self._polling:
+            self.live.emit(await fetch_live(self._uuid))
+            try:
+                running = await self.loop.run_in_executor(None, pz_running)
+            except Exception:
+                running = False
+            self.pz.emit(running)
+            await asyncio.sleep(3)
+
+    def stop_poll(self):
+        self._polling = False
+
+    def shutdown(self):
+        self._polling = False
+        if self.loop is not None:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+
+
+class LauncherWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("치지직 API Launcher  v1.1.0")
+        ico = resource_path(ICON_FILE)
+        if os.path.exists(ico):
+            self.setWindowIcon(QIcon(ico))
+        self.resize(620, 350)
+        self.core = LauncherCore()
+        self.core.resolved.connect(self._on_resolved)
+        self.core.invalid.connect(self._on_invalid)
+        self.core.live.connect(self._on_live)
+        self.core.pz.connect(self._on_pz)
+        self._uuid = ""; self._name = ""
+        self._live = False; self._pz = False
+        self.main_win = None
+        self._build()
+        self.setStyleSheet(DARK_QSS)
+
+    # --- 빌드 ---
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18); root.setSpacing(10)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._page_input())     # 0
+        self.stack.addWidget(self._page_invalid())   # 1
+        self.stack.addWidget(self._page_check())      # 2
+        root.addWidget(self.stack, 1)
+
+    def _muted(self, t):
+        l = QLabel(t); l.setObjectName("muted"); return l
+
+    def _sect(self, t):
+        l = QLabel(t); l.setObjectName("sect"); return l
+
+    def _page_input(self):
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 8, 0, 0); v.setSpacing(10)
+        v.addWidget(self._sect("치지직 채널 확인"))
+        v.addWidget(self._muted("치지직 채널  —  URL · 채널명 · UUID 아무거나"))
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("https://chzzk.naver.com/live/…  또는  채널명")
+        self.input.textChanged.connect(lambda s: self.verify_btn.setEnabled(bool(s.strip())))
+        self.input.returnPressed.connect(self._verify)
+        v.addWidget(self.input)
+        row = QHBoxLayout(); row.addStretch(1)
+        self.verify_btn = QPushButton("확인"); self.verify_btn.setObjectName("verify")
+        self.verify_btn.setEnabled(False)            # 디폴트: 텍스트 없으면 회색 비활성
+        self.verify_btn.clicked.connect(self._verify)
+        row.addWidget(self.verify_btn); row.addStretch(1)
+        v.addSpacing(8); v.addLayout(row); v.addStretch(1)
+        return w
+
+    def _page_invalid(self):
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 8, 0, 0); v.setSpacing(14)
+        v.addWidget(self._sect("치지직 채널 확인"))
+        v.addStretch(1)
+        e = QLabel("유효하지 않은 채널입니다"); e.setObjectName("err"); e.setAlignment(Qt.AlignCenter)
+        v.addWidget(e)
+        row = QHBoxLayout(); row.addStretch(1)
+        again = QPushButton("다시입력"); again.clicked.connect(self._retry)
+        row.addWidget(again); row.addStretch(1)
+        v.addLayout(row); v.addStretch(1)
+        return w
+
+    def _page_check(self):
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 8, 0, 0); v.setSpacing(12)
+        v.addWidget(self._sect("치지직 채널 확인"))
+        self.welcome = QLabel(""); self.welcome.setObjectName("welcome")
+        self.welcome.setAlignment(Qt.AlignCenter); self.welcome.setTextFormat(Qt.RichText)
+        v.addWidget(self.welcome)
+        v.addSpacing(4)
+        self.r_uuid = self._check_row(); v.addWidget(self.r_uuid[0])
+        self.r_live = self._check_row(); v.addWidget(self.r_live[0])
+        self.r_pz   = self._check_row(); v.addWidget(self.r_pz[0])
+        v.addSpacing(10)
+        row = QHBoxLayout(); row.addStretch(1)
+        self.connect_btn = QPushButton("연동 시작"); self.connect_btn.setObjectName("start")
+        self.connect_btn.setEnabled(False)
+        self.connect_btn.clicked.connect(self._go_main)
+        row.addWidget(self.connect_btn); row.addStretch(1)
+        v.addLayout(row); v.addStretch(1)
+        return w
+
+    def _check_row(self):
+        w = QWidget(); l = QHBoxLayout(w); l.setContentsMargins(0, 0, 0, 0); l.setSpacing(10)
+        l.addStretch(1)
+        dot = QLabel("●"); dot.setStyleSheet("color:#ef9f27; font-size:12px;")
+        txt = QLabel("")
+        l.addWidget(dot); l.addWidget(txt); l.addStretch(1)
+        return w, dot, txt
+
+    @staticmethod
+    def _set_row(row, done, text):
+        _, dot, txt = row
+        dot.setStyleSheet(f"color:{'#5dcaa5' if done else '#ef9f27'}; font-size:12px;")
+        txt.setText(text)
+        txt.setStyleSheet(f"color:{'#e8e8ea' if done else '#9a9ca3'};")
+
+    # --- 흐름 ---
+    def _verify(self):
+        txt = self.input.text().strip()
+        if not txt:
+            return
+        self.verify_btn.setEnabled(False); self.verify_btn.setText("확인 중…")
+        self.core.verify(txt)
+
+    def _on_resolved(self, uuid, name):
+        self._uuid = uuid
+        self._name = name or (uuid[:8] + "…")
+        self.verify_btn.setText("확인")
+        self.welcome.setText(f"<span style='color:#5dcaa5'>[ {self._name} ]</span> 님, 환영합니다")
+        self._live = False; self._pz = False
+        self._set_row(self.r_uuid, True,  "UUID 확인 완료")
+        self._set_row(self.r_live, False, "방송 상태 확인 중…")
+        self._set_row(self.r_pz,   False, "Project Zomboid 확인 중…")
+        self.connect_btn.setEnabled(False)
+        self.stack.setCurrentIndex(2)
+        self.core.start_poll(uuid)
+
+    def _on_invalid(self):
+        self.verify_btn.setText("확인")
+        self.stack.setCurrentIndex(1)
+
+    def _retry(self):
+        # '확인 누르기 직전' 상태로 — 입력 텍스트는 유지, 확인 버튼은 텍스트 있으면 다시 초록
+        self.verify_btn.setEnabled(bool(self.input.text().strip()))
+        self.stack.setCurrentIndex(0)
+        self.input.setFocus()
+
+    def _on_live(self, live):
+        self._live = live
+        self._set_row(self.r_live, live, "방송 중" if live else "방송이 오프라인 상태입니다")
+        self._refresh()
+
+    def _on_pz(self, running):
+        self._pz = running
+        self._set_row(self.r_pz, running,
+                      "Project Zomboid 실행 중" if running else "Project Zomboid가 실행중이 아닙니다")
+        self._refresh()
+
+    def _refresh(self):
+        self.connect_btn.setEnabled(self._live and self._pz)
+
+    def _go_main(self):
+        self.core.stop_poll()
+        preset = {"channel": self.input.text().strip(),
+                  "uuid": self._uuid, "name": self._name, "autostart": True}
+        self.main_win = MainWindow(preset=preset)
+        self.main_win.show()
+        self.close()
+
+    def closeEvent(self, e):
+        try:
+            self.core.shutdown()
+        except Exception:
+            pass
+        super().closeEvent(e)
+
+
 def main():
     app = QApplication(sys.argv)
     ico = resource_path(ICON_FILE)
     if os.path.exists(ico):
         app.setWindowIcon(QIcon(ico))
-    win = MainWindow(); win.show()
+    win = LauncherWindow(); win.show()
     sys.exit(app.exec_())
 
 
