@@ -27,9 +27,8 @@ import threading
 import time
 from collections import namedtuple
 from pathlib import Path
-from urllib.parse import quote
 
-from PyQt5.QtCore import Qt, QObject, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, QObject, pyqtSignal, QTimer, QSharedMemory
 from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton, QComboBox,
@@ -248,7 +247,8 @@ class ZomboidAdapter(GameAdapter):
 
     @staticmethod
     def _enc(s):
-        return quote(s or "", safe="")  # 모드 urldecode 가 %XX 만 풀어서 공백/콤마/줄바꿈/한글 전부 인코딩
+        # 콤마·줄바꿈·퍼센트만 인코딩, 한글 등 유니코드는 raw UTF-8로 통과 (PZ Lua urldecode 호환)
+        return (s or "").replace("%", "%25").replace(",", "%2C").replace("\n", "%0A").replace("\r", "%0D")
 
     def write(self, amount, sender, message):
         line = "%d,%s,%s" % (int(amount), self._enc(sender), self._enc(message))
@@ -512,7 +512,7 @@ def make_header() -> QWidget:
             h.addWidget(logo)
     brand = QLabel("치지직 API Launcher"); brand.setObjectName("brand")
     h.addWidget(brand); h.addStretch(1)
-    ver = QLabel("v1.3.2"); ver.setObjectName("ver")
+    ver = QLabel("v1.3.3"); ver.setObjectName("ver")
     h.addWidget(ver)
     return bar
 
@@ -521,11 +521,12 @@ class MainWindow(QWidget):
     def __init__(self, preset=None):
         super().__init__()
         self.preset = preset or {}        # 런처에서 넘어온 {channel,uuid,name,autostart}
-        self.setWindowTitle("치지직 API Launcher  v1.3.2")
+        self.setWindowTitle("치지직 API Launcher  v1.3.3")
         ico = resource_path(ICON_FILE)
         if os.path.exists(ico):
             self.setWindowIcon(QIcon(ico))
         self.resize(620, 860)
+        self.setFixedSize(620, 860)
         self.adapter = ZomboidAdapter()
         self.worker = None
         self.cfg = load_config()
@@ -723,7 +724,12 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "연령제한 감지",
                                 "방송에 연령제한이 걸려있습니다.\n연동을 중단하고 로그인 화면으로 돌아갑니다.")
         self._persist()
-        self._gate = LauncherWindow()                  # 매번 새 게이트 = 채널부터 다시 (완전 초기)
+        preset = {
+            "channel": self.channel_input.text().strip(),
+            "uuid": self.preset.get("uuid", ""),
+            "name": self.preset.get("name", ""),
+        }
+        self._gate = LauncherWindow(preset=preset if preset["uuid"] else None)
         self._gate.show()
         self.close()
 
@@ -923,13 +929,14 @@ class MainGuard(QObject):
 
 
 class LauncherWindow(QWidget):
-    def __init__(self):
+    def __init__(self, preset=None):
         super().__init__()
-        self.setWindowTitle("치지직 API Launcher  v1.3.2")
+        self.setWindowTitle("치지직 API Launcher  v1.3.3")
         ico = resource_path(ICON_FILE)
         if os.path.exists(ico):
             self.setWindowIcon(QIcon(ico))
         self.resize(620, 300)
+        self.setFixedSize(620, 300)
         self.core = LauncherCore()
         self.core.resolved.connect(self._on_resolved)
         self.core.invalid.connect(self._on_invalid)
@@ -943,6 +950,10 @@ class LauncherWindow(QWidget):
         self.main_win = None
         self._build()
         self.setStyleSheet(DARK_QSS)
+        # preset 있으면 UUID 확인 완료 상태(체크리스트)부터 시작
+        if preset and preset.get("uuid"):
+            self.input.setText(preset.get("channel", ""))
+            self._on_resolved(preset["uuid"], preset.get("name", ""))
 
     # --- 빌드 ---
     def _build(self):
@@ -1006,6 +1017,8 @@ class LauncherWindow(QWidget):
         v.addWidget(self.adult_warn)
         v.addSpacing(10)
         row = QHBoxLayout(); row.addStretch(1)
+        back_btn = QPushButton("이전"); back_btn.clicked.connect(self._back_to_input)
+        row.addWidget(back_btn)
         self.connect_btn = QPushButton("연동 시작"); self.connect_btn.setObjectName("start")
         self.connect_btn.setEnabled(False)
         self.connect_btn.clicked.connect(self._go_main)
@@ -1014,8 +1027,7 @@ class LauncherWindow(QWidget):
         return w
 
     def _check_row(self):
-        w = QWidget(); l = QHBoxLayout(w); l.setContentsMargins(0, 0, 0, 0); l.setSpacing(10)
-        l.addStretch(1)
+        w = QWidget(); l = QHBoxLayout(w); l.setContentsMargins(120, 0, 0, 0); l.setSpacing(10)
         dot = QLabel("●"); dot.setStyleSheet("color:#ef9f27; font-size:12px;")
         txt = QLabel("")
         l.addWidget(dot); l.addWidget(txt); l.addStretch(1)
@@ -1040,7 +1052,7 @@ class LauncherWindow(QWidget):
         self._uuid = uuid
         self._name = name or (uuid[:8] + "…")
         self.verify_btn.setText("확인")
-        self.welcome.setText(f"<span style='color:#5dcaa5'>[ {self._name} ]</span> 님, 환영합니다")
+        self.welcome.setText(f"<span style='color:#5dcaa5; font-size:26px; font-weight:900'>[ {self._name} ]</span> 님, 환영합니다")
         self._live = False; self._pz = False; self._connected = False
         self._adult = False; self._adult_warned = False
         self.adult_warn.setVisible(False)
@@ -1059,6 +1071,19 @@ class LauncherWindow(QWidget):
     def _retry(self):
         # '확인 누르기 직전' 상태로 — 입력 텍스트는 유지, 확인 버튼은 텍스트 있으면 다시 초록
         self.verify_btn.setEnabled(bool(self.input.text().strip()))
+        self.stack.setCurrentIndex(0)
+        self.input.setFocus()
+
+    def _back_to_input(self):
+        """체크리스트에서 이전 버튼 — 폴링 중단 + 상태 초기화 후 채널 입력 화면으로"""
+        self.core.stop_poll()
+        self._uuid = ""; self._name = ""
+        self._live = False; self._pz = False; self._adult = False; self._connected = False
+        self._adult_warned = False
+        self.adult_warn.setVisible(False)
+        self.input.setText("")
+        self.verify_btn.setEnabled(False)
+        self.verify_btn.setText("확인")
         self.stack.setCurrentIndex(0)
         self.input.setFocus()
 
@@ -1114,6 +1139,13 @@ class LauncherWindow(QWidget):
 
 def main():
     app = QApplication(sys.argv)
+
+    shared_mem = QSharedMemory("PuppetChzzkLauncher_SingleInstance")
+    if not shared_mem.create(1):
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.warning(None, "중복 실행", "이미 실행 중입니다.")
+        sys.exit(0)
+
     ico = resource_path(ICON_FILE)
     if os.path.exists(ico):
         app.setWindowIcon(QIcon(ico))
