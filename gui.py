@@ -351,6 +351,14 @@ def pz_running() -> bool:
         return False
 
 
+def pz_connected() -> bool:
+    try:
+        path = Path.home() / "Zomboid" / "Lua" / "pz_status.txt"
+        return path.read_text(encoding="utf-8").strip() == "CONNECTED"
+    except Exception:
+        return False
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  코어: 수신 워커 (스레드 + asyncio -> Qt 시그널, 플랫폼/게임 중립)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -482,7 +490,7 @@ def make_header() -> QWidget:
             h.addWidget(logo)
     brand = QLabel("치지직 API Launcher"); brand.setObjectName("brand")
     h.addWidget(brand); h.addStretch(1)
-    ver = QLabel("v1.0"); ver.setObjectName("ver")
+    ver = QLabel("v1.3.1"); ver.setObjectName("ver")
     h.addWidget(ver)
     return bar
 
@@ -491,7 +499,7 @@ class MainWindow(QWidget):
     def __init__(self, preset=None):
         super().__init__()
         self.preset = preset or {}        # 런처에서 넘어온 {channel,uuid,name,autostart}
-        self.setWindowTitle("치지직 API Launcher  v1.2.0")
+        self.setWindowTitle("치지직 API Launcher  v1.3.1")
         ico = resource_path(ICON_FILE)
         if os.path.exists(ico):
             self.setWindowIcon(QIcon(ico))
@@ -750,6 +758,7 @@ class LauncherCore(QObject):
     live     = pyqtSignal(bool)       # 방송 on/off
     adult    = pyqtSignal(bool)       # 19세 방송 여부
     pz       = pyqtSignal(bool)       # PZ 실행 여부
+    connected = pyqtSignal(bool)      # PZ 연결 상태
 
     def __init__(self):
         super().__init__()
@@ -809,6 +818,11 @@ class LauncherCore(QObject):
             except Exception:
                 running = False
             self.pz.emit(running)
+            try:
+                connected = await self.loop.run_in_executor(None, pz_connected)
+            except Exception:
+                connected = False
+            self.connected.emit(connected)
             await asyncio.sleep(3)
 
     def stop_poll(self):
@@ -876,7 +890,7 @@ class MainGuard(QObject):
 class LauncherWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("치지직 API Launcher  v1.2.0")
+        self.setWindowTitle("치지직 API Launcher  v1.3.1")
         ico = resource_path(ICON_FILE)
         if os.path.exists(ico):
             self.setWindowIcon(QIcon(ico))
@@ -887,8 +901,9 @@ class LauncherWindow(QWidget):
         self.core.live.connect(self._on_live)
         self.core.adult.connect(self._on_adult)
         self.core.pz.connect(self._on_pz)
+        self.core.connected.connect(self._on_connected)
         self._uuid = ""; self._name = ""
-        self._live = False; self._pz = False; self._adult = False
+        self._live = False; self._pz = False; self._adult = False; self._connected = False
         self._adult_warned = False
         self.main_win = None
         self._build()
@@ -949,6 +964,7 @@ class LauncherWindow(QWidget):
         self.r_uuid = self._check_row(); v.addWidget(self.r_uuid[0])
         self.r_live = self._check_row(); v.addWidget(self.r_live[0])
         self.r_pz   = self._check_row(); v.addWidget(self.r_pz[0])
+        self.r_conn = self._check_row(); v.addWidget(self.r_conn[0])
         self.adult_warn = QLabel("⚠ 19세(성인) 방송은 연동할 수 없습니다")
         self.adult_warn.setObjectName("err"); self.adult_warn.setAlignment(Qt.AlignCenter)
         self.adult_warn.setVisible(False)
@@ -990,12 +1006,13 @@ class LauncherWindow(QWidget):
         self._name = name or (uuid[:8] + "…")
         self.verify_btn.setText("확인")
         self.welcome.setText(f"<span style='color:#5dcaa5'>[ {self._name} ]</span> 님, 환영합니다")
-        self._live = False; self._pz = False
+        self._live = False; self._pz = False; self._connected = False
         self._adult = False; self._adult_warned = False
         self.adult_warn.setVisible(False)
         self._set_row(self.r_uuid, True,  "UUID 확인 완료")
         self._set_row(self.r_live, False, "방송 상태 확인 중…")
         self._set_row(self.r_pz,   False, "Project Zomboid 확인 중…")
+        self._set_row(self.r_conn, False, "멀티서버 접속 확인 중…")
         self.connect_btn.setEnabled(False)
         self.stack.setCurrentIndex(2)
         self.core.start_poll(uuid)
@@ -1021,6 +1038,12 @@ class LauncherWindow(QWidget):
                       "Project Zomboid 실행 중" if running else "Project Zomboid가 실행중이 아닙니다")
         self._refresh()
 
+    def _on_connected(self, conn):
+        self._connected = conn
+        self._set_row(self.r_conn, conn,
+                      "멀티서버 접속 완료" if conn else "멀티서버에 접속되지 않았습니다")
+        self._refresh()
+
     def _on_adult(self, is_adult):
         self._adult = is_adult
         self.adult_warn.setVisible(is_adult)
@@ -1034,7 +1057,9 @@ class LauncherWindow(QWidget):
         self._refresh()
 
     def _refresh(self):
-        self.connect_btn.setEnabled(self._live and self._pz and not self._adult)
+        self.connect_btn.setEnabled(
+            self._live and self._pz and self._connected and not self._adult
+        )
 
     def _go_main(self):
         self.core.stop_poll()
