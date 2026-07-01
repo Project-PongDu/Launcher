@@ -310,6 +310,8 @@ async def fetch_whitelist() -> set:
 async def fetch_status(uuid: str):
     """(is_live, is_adult) 반환. chzzkpy live_status 한 번으로 방송 on/off + 19세 여부 동시 판정.
        방송 안 하면 live_status 가 None → (False, False)."""
+    if uuid == "2eef65dbe7d5a7d51423ec114808984d":   # 관리자: 오프라인이어도 라이브 취급
+        return (True, False)
     try:
         from chzzkpy.unofficial import Client
         c = Client()
