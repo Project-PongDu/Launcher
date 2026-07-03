@@ -1162,8 +1162,8 @@ class LauncherWindow(QWidget):
 
     def _page_input(self):
         w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 8, 0, 0); v.setSpacing(10)
-        v.addWidget(self._sect("치지직 채널 확인"))
         v.addSpacing(55);
+        v.addWidget(self._sect("치지직 채널 확인"))
         v.addWidget(self._muted("치지직 채널  —  URL · 채널명 · UUID 아무거나"))
         self.input = QLineEdit()
         self.input.setPlaceholderText("https://chzzk.naver.com/live/…  또는  채널명")
