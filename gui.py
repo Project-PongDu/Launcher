@@ -47,7 +47,7 @@ from PyQt5.QtWidgets import (
 #    3) JSON 객체       {"이름":"uuid", ...}  또는  {"whitelist":[...]}
 
 
-VERSION = "v2.1.1"
+VERSION = "v2.2.0"
 
 
 
@@ -99,10 +99,29 @@ def save_config(d: dict):
     except OSError:
         pass
 
-def reset_config():
-    """저장된 설정 파일을 삭제 -> 다음 load_config()는 {}를 반환해 전부 기본값으로 돌아감."""
+
+# ── 리워드 프리셋 (Zomboid 폴더의 독립 json — 있으면 이걸 쓰고, 없으면 코드 기본값) ──
+PRESET_PATH = CONFIG_DIR / "reward_preset.json"
+
+def load_reward_preset() -> dict:
     try:
-        CONFIG_PATH.unlink(missing_ok=True)
+        return json.loads(PRESET_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def save_reward_preset(tiers: dict):
+    """{amount(int): featureId} -> reward_preset.json 기록. 저장 버튼 = 내보내기."""
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        data = {str(amt): fid for amt, fid in sorted(tiers.items())}
+        PRESET_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+def reset_reward_preset():
+    """프리셋 파일 삭제 -> 다음 로드부터 DEFAULT_REWARD_TIERS(코드 기본값) 사용."""
+    try:
+        PRESET_PATH.unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -377,20 +396,17 @@ def parse_whitelist(raw: str) -> set:
 
 
 async def fetch_whitelist() -> set:
-    """원격 화이트리스트 fetch. 성공하면 config 에 캐시. 실패하면 캐시 폴백(없으면 빈 집합)."""
+    """원격 화이트리스트 fetch. 캐시 없음 — 매번 GitHub에서 받아오고,
+       실패하면 빈 집합 반환 = 전원 차단 (fail-closed)."""
     import aiohttp
     try:
         timeout = aiohttp.ClientTimeout(total=6)
         async with aiohttp.ClientSession(headers=UA, timeout=timeout) as s:
             async with s.get(WHITELIST_URL) as r:
                 raw = await r.text()
-        wl = parse_whitelist(raw)
-        if wl:
-            cfg = load_config(); cfg["whitelist"] = sorted(wl); save_config(cfg)
-            return wl
+        return parse_whitelist(raw)
     except Exception:
-        pass
-    return set(load_config().get("whitelist", []))   # 네트워크 실패 → 마지막 캐시로 동작
+        return set()
 
 
 async def fetch_status(uuid: str):
@@ -622,8 +638,9 @@ class MainWindow(QWidget):
         self.guard = None                             # PZ 종료 + 19세 전환 감시 (연동 중에만)
         self.tier_row_widgets = []                    # [(row_widget, amt_edit, feat_combo), ...]
         # reward_tiers는 _build()가 편집 테이블을 그릴 때 이미 필요하므로 그 전에 로드.
-        # 우선순위: 게이트에서 넘어온 preset["reward_tiers"](방금 import) > config.json > 기본값
-        self.reward_preset_locked = "reward_tiers" in self.preset
+        # 우선순위: 게이트에서 넘어온 preset["reward_tiers"](방금 import) > reward_preset.json > 기본값
+        # 프리셋(json)이 존재하면 편집 잠금 — 티어를 바꾸려면 게이트에서 초기화부터.
+        self.reward_preset_locked = ("reward_tiers" in self.preset) or PRESET_PATH.exists()
         self._load_reward_tiers()
         self._build()
         self._restore()
@@ -694,11 +711,6 @@ class MainWindow(QWidget):
 
         tctl.addStretch(1)
 
-        self.export_btn = QPushButton("내보내기")
-        self.export_btn.setObjectName("link")
-        self.export_btn.clicked.connect(self._export_reward_preset)
-        tctl.addWidget(self.export_btn)
-
         self.save_tiers_btn = QPushButton("저장")
         self.save_tiers_btn.clicked.connect(self._save_tiers)
         tctl.addWidget(self.save_tiers_btn)
@@ -707,7 +719,6 @@ class MainWindow(QWidget):
 
         if self.reward_preset_locked:
             self.add_row_btn.hide()
-            self.export_btn.hide()
             self.save_tiers_btn.hide()
 
             lock = QLabel("프리셋이 적용되어 편집이 잠겨 있습니다.")
@@ -758,7 +769,7 @@ class MainWindow(QWidget):
         del_btn = QPushButton("✕"); del_btn.setObjectName("link"); del_btn.setFixedWidth(28)
         del_btn.clicked.connect(lambda: self._remove_tier_row(row))
         if self.reward_preset_locked:
-            amt_edit.setEnabled(True)
+            amt_edit.setEnabled(False)
             feat_combo.setEnabled(False)
             del_btn.hide()
         h.addWidget(amt_edit); h.addWidget(feat_combo, 1); h.addWidget(del_btn)
@@ -774,7 +785,7 @@ class MainWindow(QWidget):
         row.deleteLater()
 
     def _save_tiers(self):
-        """편집 테이블 내용 -> adapter.reward_tiers 반영 + config.json persist + 테스트 콤보 갱신."""
+        """편집 테이블 내용 -> adapter.reward_tiers 반영 + reward_preset.json 자동 내보내기 + 테스트 콤보 갱신."""
         new_tiers = {}
         for _row, amt_edit, feat_combo in self.tier_row_widgets:
             txt = amt_edit.text().strip().replace(",", "")
@@ -792,9 +803,9 @@ class MainWindow(QWidget):
         if not new_tiers:
             self._log("⚠ 저장할 티어가 없음 — 최소 1개는 있어야 함"); return
         self.adapter.reward_tiers = new_tiers
-        self._persist()
+        save_reward_preset(new_tiers)               # 저장 = 내보내기 (Zomboid 폴더에 자동 기록)
         self._build_test_combo()
-        self._log(f"리워드 티어 저장됨 ({len(new_tiers)}개)")
+        self._log(f"리워드 티어 저장됨 ({len(new_tiers)}개) → {PRESET_PATH}")
 
     def _build_test_combo(self):
         self.test_combo.clear()
@@ -802,24 +813,11 @@ class MainWindow(QWidget):
             label = self.adapter.FEATURES.get(fid, fid)
             self.test_combo.addItem(f"{amt:,} — {label}", amt)
 
-    def _export_reward_preset(self):
-        fn, _ = QFileDialog.getSaveFileName(
-            self, "리워드 프리셋 내보내기",
-            str(Path.home() / "reward_preset.json"), "JSON (*.json)")
-        if not fn:
-            return
-        data = {str(amt): fid for amt, fid in sorted(self.adapter.reward_tiers.items())}
-        try:
-            Path(fn).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            self._log(f"리워드 프리셋 내보냄: {fn}")
-        except OSError as e:
-            self._log(f"⚠ 내보내기 실패: {e}")
-
     # --- 설정 복원/저장 ---
     def _load_reward_tiers(self):
-        """preset(게이트 import) > config.json > 기본값 순으로 adapter.reward_tiers를 채운다.
+        """게이트 import(preset) > Zomboid/reward_preset.json > 코드 기본값 순.
            featureId가 FEATURES에 없는 항목/파싱 안 되는 키는 무시(방어적 마이그레이션)."""
-        raw = self.preset.get("reward_tiers") or self.cfg.get("reward_tiers")
+        raw = self.preset.get("reward_tiers") or load_reward_preset()
         if not isinstance(raw, dict) or not raw:
             return
         loaded = {}
@@ -846,7 +844,6 @@ class MainWindow(QWidget):
         self.cfg.update({
             "channel": self.channel_input.text().strip(),
             "path": str(self.adapter.path) if self.adapter.path else "",
-            "reward_tiers": {str(amt): fid for amt, fid in self.adapter.reward_tiers.items()},
         })
         save_config(self.cfg)
 
@@ -940,7 +937,7 @@ class MainWindow(QWidget):
             "uuid": self.preset.get("uuid", ""),
             "name": self.preset.get("name", ""),
         }
-        self._gate = LauncherWindow(preset=preset if preset["uuid"] else None, check_config=False)
+        self._gate = LauncherWindow(preset=preset if preset["uuid"] else None)
         self._gate.show()
         self.close()
 
@@ -1008,7 +1005,6 @@ class LauncherCore(QObject):
     def __init__(self):
         super().__init__()
         self.loop = None
-        self._wl = None
         self._uuid = None
         self._polling = False
         self._ready = threading.Event()
@@ -1029,11 +1025,6 @@ class LauncherCore(QObject):
     def verify(self, text):
         self._submit(self._verify(text))
 
-    async def _ensure_wl(self):
-        if not self._wl:                       # 비어있으면(실패 캐시 포함) 다음 시도 때 재요청
-            self._wl = await fetch_whitelist()
-        return self._wl or set()
-
     async def _verify(self, text):
         src = ChzzkpySource()                  # resolve 는 기존 어댑터 재사용
         try:
@@ -1045,7 +1036,7 @@ class LauncherCore(QObject):
             self.resolved.emit(uuid, name or "")
             return
 
-        wl = await self._ensure_wl()
+        wl = await fetch_whitelist()           # 확인 시도마다 매번 GitHub에서 새로 받아옴 (캐시 없음)
         if uuid and uuid in wl:                # wl 비었으면(=로드 실패) 전원 차단 = fail-closed
             self.resolved.emit(uuid, name or "")
         else:
@@ -1151,7 +1142,7 @@ class MainGuard(QObject):
 
 
 class LauncherWindow(QWidget):
-    def __init__(self, preset=None, check_config=True):
+    def __init__(self, preset=None):
         super().__init__()
         self.setWindowTitle("치지직 API Launcher  "+VERSION)
         ico = resource_path(ICON_FILE)
@@ -1159,8 +1150,6 @@ class LauncherWindow(QWidget):
             self.setWindowIcon(QIcon(ico))
         self.resize(620, 340)
         self.setFixedSize(620, 340)
-        if check_config:
-            self._prompt_existing_config()
         self.core = LauncherCore()
         self.core.resolved.connect(self._on_resolved)
         self.core.invalid.connect(self._on_invalid)
@@ -1179,25 +1168,6 @@ class LauncherWindow(QWidget):
         if preset and preset.get("uuid"):
             self.input.setText(preset.get("channel", ""))
             self._on_resolved(preset["uuid"], preset.get("name", ""))
-
-    def _prompt_existing_config(self):
-        """앱 최초 진입(cold start) 시에만 호출. 저장된 설정 파일이 있으면 유지/초기화를 물어본다.
-           게이트 자동 복귀(PZ 종료 등, check_config=False)에선 호출 안 됨 -> 매번 안 물어봄."""
-        if not CONFIG_PATH.exists():
-            return
-        box = QMessageBox(self)
-        box.setWindowTitle("기존 설정 발견")
-        box.setText(
-            f"이전에 저장된 설정을 찾았습니다.\n({CONFIG_PATH})\n\n"
-            "채널·리워드 티어 등 기존 설정을 유지할까요?\n"
-            "‘초기화’를 선택하면 전부 기본값으로 되돌립니다."
-        )
-        keep_btn = box.addButton("유지", QMessageBox.AcceptRole)
-        reset_btn = box.addButton("초기화", QMessageBox.DestructiveRole)
-        box.setDefaultButton(keep_btn)
-        box.exec_()
-        if box.clickedButton() is reset_btn:
-            reset_config()
 
     # --- 빌드 ---
     def _build(self):
@@ -1263,13 +1233,17 @@ class LauncherWindow(QWidget):
         v.addSpacing(6)
 
         prow = QHBoxLayout(); prow.addStretch(1)
-        import_btn = QPushButton("리워드 프리셋 불러오기"); import_btn.setObjectName("link")
-        import_btn.clicked.connect(self._import_reward_preset)
-        prow.addWidget(import_btn)
+        self.reset_cfg_btn = QPushButton("초기화"); self.reset_cfg_btn.setObjectName("link")
+        self.reset_cfg_btn.clicked.connect(self._on_reset_config)
+        prow.addWidget(self.reset_cfg_btn)
+        self.import_cfg_btn = QPushButton("리워드 프리셋 불러오기"); self.import_cfg_btn.setObjectName("link")
+        self.import_cfg_btn.clicked.connect(lambda: self._import_reward_preset(self.preset_status))
+        prow.addWidget(self.import_cfg_btn)
         self.preset_status = self._muted(""); self.preset_status.setAlignment(Qt.AlignCenter)
         prow.addWidget(self.preset_status)
         prow.addStretch(1)
         v.addLayout(prow)
+        self._refresh_config_buttons()
 
         v.addSpacing(4)
         row = QHBoxLayout(); row.addStretch(1)
@@ -1282,7 +1256,28 @@ class LauncherWindow(QWidget):
         v.addLayout(row); v.addStretch(1)
         return w
 
-    def _import_reward_preset(self):
+    def _refresh_config_buttons(self):
+        """reward_preset.json 존재 여부로 버튼 하나만 표시: 있으면 초기화, 없으면 불러오기."""
+        exists = PRESET_PATH.exists()
+        self.reset_cfg_btn.setVisible(exists)
+        self.import_cfg_btn.setVisible(not exists)
+
+    def _on_reset_config(self):
+        box = QMessageBox(self)
+        box.setWindowTitle("리워드 프리셋 초기화")
+        box.setText("저장된 리워드 프리셋을 삭제하고 기본 티어로 되돌립니다.\n계속할까요?")
+        yes_btn = box.addButton("초기화", QMessageBox.DestructiveRole)
+        box.addButton("취소", QMessageBox.RejectRole)
+        box.exec_()
+        if box.clickedButton() is not yes_btn:
+            return
+        reset_reward_preset()
+        self.reward_preset = None
+        self.preset_status.setText("초기화됨 — 기본 티어 사용")
+        self.preset_status.setStyleSheet("color:#5dcaa5;")
+        self._refresh_config_buttons()
+
+    def _import_reward_preset(self, status_label):
         """리워드 프리셋(JSON, {amount: featureId}) 불러오기. 실제 반영은 MainWindow로 넘어간 뒤
            reward_tiers 로 로드됨 (_go_main 참고) — 여기선 파싱/검증만 하고 들고만 있는다."""
         fn, _ = QFileDialog.getOpenFileName(
@@ -1292,10 +1287,10 @@ class LauncherWindow(QWidget):
         try:
             raw = json.loads(Path(fn).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
-            self.preset_status.setText(f"⚠ 불러오기 실패: {e}")
+            status_label.setText(f"⚠ 불러오기 실패: {e}")
             return
         if not isinstance(raw, dict) or not raw:
-            self.preset_status.setText("⚠ 형식이 올바르지 않음 ({amount: featureId} JSON)")
+            status_label.setText("⚠ 형식이 올바르지 않음 ({amount: featureId} JSON)")
             return
         valid = {}
         for k, v in raw.items():
@@ -1306,11 +1301,13 @@ class LauncherWindow(QWidget):
             if amt > 0 and v in ZomboidAdapter.FEATURES:
                 valid[k] = v
         if not valid:
-            self.preset_status.setText("⚠ 유효한 티어가 없음 (featureId 불일치)")
+            status_label.setText("⚠ 유효한 티어가 없음 (featureId 불일치)")
             return
         self.reward_preset = valid
-        self.preset_status.setText(f"프리셋 로드됨 ({len(valid)}개) — 연동 시작 시 적용")
-        self.preset_status.setStyleSheet("color:#5dcaa5;")
+        save_reward_preset({int(k): v for k, v in valid.items()})   # Zomboid 폴더에 설치 -> 이후 실행에도 유지
+        self._refresh_config_buttons()
+        status_label.setText(f"프리셋 적용됨 ({len(valid)}개)")
+        status_label.setStyleSheet("color:#5dcaa5;")
 
     def _check_row(self):
         w = QWidget(); l = QHBoxLayout(w); l.setContentsMargins(120, 0, 0, 0); l.setSpacing(10)
