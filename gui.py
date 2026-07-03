@@ -47,7 +47,7 @@ from PyQt5.QtWidgets import (
 #    3) JSON 객체       {"이름":"uuid", ...}  또는  {"whitelist":[...]}
 
 
-VERSION = "v2.2.1"
+VERSION = "v2.2.2"
 
 
 
@@ -636,7 +636,7 @@ class MainWindow(QWidget):
         self.cfg = load_config()
         self._returning = False                       # 게이트 복귀 중복 방지
         self.guard = None                             # PZ 종료 + 19세 전환 감시 (연동 중에만)
-        self.tier_row_widgets = []                    # [(row_widget, amt_edit, feat_combo), ...]
+        self.tier_row_widgets = []                    # [(row_widget, amt_edit, feat_combo, del_btn), ...]
         # reward_tiers는 _build()가 편집 테이블을 그릴 때 이미 필요하므로 그 전에 로드.
         # 우선순위: 게이트에서 넘어온 preset["reward_tiers"](방금 import) > reward_preset.json > 기본값
         # 프리셋(json)이 존재하면 편집 잠금 — 티어를 바꾸려면 게이트에서 초기화부터.
@@ -768,10 +768,10 @@ class MainWindow(QWidget):
             del_btn.hide()
         h.addWidget(amt_edit); h.addWidget(feat_combo, 1); h.addWidget(del_btn)
         self.tiers_box.addWidget(row)
-        self.tier_row_widgets.append((row, amt_edit, feat_combo))
+        self.tier_row_widgets.append((row, amt_edit, feat_combo, del_btn))
 
     def _remove_tier_row(self, row):
-        for i, (w, _amt, _feat) in enumerate(self.tier_row_widgets):
+        for i, (w, _amt, _feat, _del) in enumerate(self.tier_row_widgets):
             if w is row:
                 self.tier_row_widgets.pop(i)
                 break
@@ -781,7 +781,7 @@ class MainWindow(QWidget):
     def _save_tiers(self):
         """편집 테이블 내용 -> adapter.reward_tiers 반영 + reward_preset.json 자동 내보내기 + 테스트 콤보 갱신."""
         new_tiers = {}
-        for _row, amt_edit, feat_combo in self.tier_row_widgets:
+        for _row, amt_edit, feat_combo, _del in self.tier_row_widgets:
             txt = amt_edit.text().strip().replace(",", "")
             if not txt:
                 continue
@@ -812,11 +812,10 @@ class MainWindow(QWidget):
             return
         self.add_row_btn.hide()
         self.save_tiers_btn.hide()
-        for row, amt_edit, feat_combo in self.tier_row_widgets:
+        for row, amt_edit, feat_combo, del_btn in self.tier_row_widgets:
             amt_edit.setEnabled(False)
             feat_combo.setEnabled(False)
-            # del_btn은 row 내부에 있어서 직접 참조 불가, 대신 row 자체 disable은 의미 없고
-            # 사용자는 버튼들이 숨겨지는 걸로 잠금을 인지하니까 OK
+            del_btn.hide()
 
     def _build_test_combo(self):
         self.test_combo.clear()
@@ -1198,8 +1197,8 @@ class LauncherWindow(QWidget):
 
     def _page_input(self):
         w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 8, 0, 0); v.setSpacing(10)
-        v.addSpacing(55);
         v.addWidget(self._sect("치지직 채널 확인"))
+        v.addSpacing(55);
         v.addWidget(self._muted("치지직 채널  —  URL · 채널명 · UUID 아무거나"))
         self.input = QLineEdit()
         self.input.setPlaceholderText("https://chzzk.naver.com/live/…  또는  채널명")
