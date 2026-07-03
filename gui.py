@@ -47,7 +47,7 @@ from PyQt5.QtWidgets import (
 #    3) JSON 객체       {"이름":"uuid", ...}  또는  {"whitelist":[...]}
 
 
-VERSION = "v2.2.0"
+VERSION = "v2.2.1"
 
 
 
@@ -717,13 +717,7 @@ class MainWindow(QWidget):
 
         root.addLayout(tctl)
 
-        if self.reward_preset_locked:
-            self.add_row_btn.hide()
-            self.save_tiers_btn.hide()
-
-            lock = QLabel("프리셋이 적용되어 편집이 잠겨 있습니다.")
-            lock.setObjectName("muted")
-            root.addWidget(lock)
+        self._apply_tier_lock()
 
         root.addWidget(self._sep())
 
@@ -806,6 +800,23 @@ class MainWindow(QWidget):
         save_reward_preset(new_tiers)               # 저장 = 내보내기 (Zomboid 폴더에 자동 기록)
         self._build_test_combo()
         self._log(f"리워드 티어 저장됨 ({len(new_tiers)}개) → {PRESET_PATH}")
+        
+        # 저장 완료 순간, 프리셋이 생성되었으니 편집 잠금
+        self.reward_preset_locked = True
+        self._apply_tier_lock()
+        self._log("프리셋이 적용되어 편집이 잠겨 있습니다. (초기화하려면 게이트로 돌아가세요)")
+
+    def _apply_tier_lock(self):
+        """현재 reward_preset_locked 상태에 따라 UI 활성화/비활성화."""
+        if not self.reward_preset_locked:
+            return
+        self.add_row_btn.hide()
+        self.save_tiers_btn.hide()
+        for row, amt_edit, feat_combo in self.tier_row_widgets:
+            amt_edit.setEnabled(False)
+            feat_combo.setEnabled(False)
+            # del_btn은 row 내부에 있어서 직접 참조 불가, 대신 row 자체 disable은 의미 없고
+            # 사용자는 버튼들이 숨겨지는 걸로 잠금을 인지하니까 OK
 
     def _build_test_combo(self):
         self.test_combo.clear()
