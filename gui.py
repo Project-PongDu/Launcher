@@ -55,9 +55,36 @@ WHITELIST_URL = "https://raw.githubusercontent.com/t3qquq/myPZ-Configs/refs/head
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 FORCE_ONLINE = False
 
-# ── 로컬 설정 (홈 폴더, exe 옆 아님 -> 권한 문제 회피) ────────────────────────
-CONFIG_DIR = Path.home() / ".chzzk_zomboid"
-CONFIG_PATH = CONFIG_DIR / "config.json"
+# ── 로컬 설정 (게임 유저 폴더 ~/Zomboid 안에 저장 -> rewards.txt 옆이라 찾기 쉬움) ──
+def find_zomboid_dir() -> Path:
+    """OS별 좀보이드 유저 데이터 폴더(.../Zomboid)를 찾는다.
+       ZomboidAdapter.find_path()의 rewards.txt 탐지와 동일한 후보 순회 패턴."""
+    home = Path.home()
+    cands = [
+        home / "Zomboid",
+        Path(os.environ.get("USERPROFILE", home)) / "Zomboid",
+    ]
+    for env in ("OneDrive", "OneDriveConsumer"):
+        od = os.environ.get(env)
+        if od:
+            cands.append(Path(od) / "Zomboid")
+    for c in cands:
+        if c.exists():
+            return c
+    for drive in ("C:", "D:", "E:", "F:"):
+        base = Path(drive + "\\Users")
+        if base.exists():
+            try:
+                for user in base.iterdir():
+                    p = user / "Zomboid"
+                    if p.exists():
+                        return p
+            except OSError:
+                pass
+    return cands[0]   # 못 찾으면 home/Zomboid (게임 실행 전이라 폴더가 아직 없을 수 있음)
+
+CONFIG_DIR = find_zomboid_dir()
+CONFIG_PATH = CONFIG_DIR / "chzzk_donation_config.json"
 
 def load_config() -> dict:
     try:
@@ -69,6 +96,13 @@ def save_config(d: dict):
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         CONFIG_PATH.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+def reset_config():
+    """저장된 설정 파일을 삭제 -> 다음 load_config()는 {}를 반환해 전부 기본값으로 돌아감."""
+    try:
+        CONFIG_PATH.unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -906,7 +940,7 @@ class MainWindow(QWidget):
             "uuid": self.preset.get("uuid", ""),
             "name": self.preset.get("name", ""),
         }
-        self._gate = LauncherWindow(preset=preset if preset["uuid"] else None)
+        self._gate = LauncherWindow(preset=preset if preset["uuid"] else None, check_config=False)
         self._gate.show()
         self.close()
 
@@ -1117,7 +1151,7 @@ class MainGuard(QObject):
 
 
 class LauncherWindow(QWidget):
-    def __init__(self, preset=None):
+    def __init__(self, preset=None, check_config=True):
         super().__init__()
         self.setWindowTitle("치지직 API Launcher  "+VERSION)
         ico = resource_path(ICON_FILE)
@@ -1125,6 +1159,8 @@ class LauncherWindow(QWidget):
             self.setWindowIcon(QIcon(ico))
         self.resize(620, 340)
         self.setFixedSize(620, 340)
+        if check_config:
+            self._prompt_existing_config()
         self.core = LauncherCore()
         self.core.resolved.connect(self._on_resolved)
         self.core.invalid.connect(self._on_invalid)
@@ -1143,6 +1179,25 @@ class LauncherWindow(QWidget):
         if preset and preset.get("uuid"):
             self.input.setText(preset.get("channel", ""))
             self._on_resolved(preset["uuid"], preset.get("name", ""))
+
+    def _prompt_existing_config(self):
+        """앱 최초 진입(cold start) 시에만 호출. 저장된 설정 파일이 있으면 유지/초기화를 물어본다.
+           게이트 자동 복귀(PZ 종료 등, check_config=False)에선 호출 안 됨 -> 매번 안 물어봄."""
+        if not CONFIG_PATH.exists():
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("기존 설정 발견")
+        box.setText(
+            f"이전에 저장된 설정을 찾았습니다.\n({CONFIG_PATH})\n\n"
+            "채널·리워드 티어 등 기존 설정을 유지할까요?\n"
+            "‘초기화’를 선택하면 전부 기본값으로 되돌립니다."
+        )
+        keep_btn = box.addButton("유지", QMessageBox.AcceptRole)
+        reset_btn = box.addButton("초기화", QMessageBox.DestructiveRole)
+        box.setDefaultButton(keep_btn)
+        box.exec_()
+        if box.clickedButton() is reset_btn:
+            reset_config()
 
     # --- 빌드 ---
     def _build(self):
