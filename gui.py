@@ -47,7 +47,7 @@ from PyQt5.QtWidgets import (
 #    3) JSON 객체       {"이름":"uuid", ...}  또는  {"whitelist":[...]}
 
 
-VERSION = "v2.2.2"
+VERSION = "v2.2.3"
 
 
 
@@ -640,7 +640,8 @@ class MainWindow(QWidget):
         # reward_tiers는 _build()가 편집 테이블을 그릴 때 이미 필요하므로 그 전에 로드.
         # 우선순위: 게이트에서 넘어온 preset["reward_tiers"](방금 import) > reward_preset.json > 기본값
         # 프리셋(json)이 존재하면 편집 잠금 — 티어를 바꾸려면 게이트에서 초기화부터.
-        self.reward_preset_locked = ("reward_tiers" in self.preset) or PRESET_PATH.exists()
+        # (판정 로직은 _preset_exists() 하나로 통합 — 저장 직후 재판정도 동일 함수 사용)
+        self.reward_preset_locked = self._preset_exists()
         self._load_reward_tiers()
         self._build()
         self._restore()
@@ -801,10 +802,15 @@ class MainWindow(QWidget):
         self._build_test_combo()
         self._log(f"리워드 티어 저장됨 ({len(new_tiers)}개) → {PRESET_PATH}")
         
-        # 저장 완료 순간, 프리셋이 생성되었으니 편집 잠금
-        self.reward_preset_locked = True
+        # 저장 완료 순간, reward_preset.json이 이미 기록된 뒤라 _preset_exists()가 True로 재판정됨
+        self.reward_preset_locked = self._preset_exists()
         self._apply_tier_lock()
         self._log("프리셋이 적용되어 편집이 잠겨 있습니다. (초기화하려면 게이트로 돌아가세요)")
+
+    def _preset_exists(self):
+        """잠금 판정 조건 — 게이트에서 방금 import했거나, reward_preset.json이 이미 존재하면 True.
+           __init__(최초 진입)과 _save_tiers(저장 직후) 둘 다 이 함수 하나로 재판정한다."""
+        return ("reward_tiers" in self.preset) or PRESET_PATH.exists()
 
     def _apply_tier_lock(self):
         """현재 reward_preset_locked 상태에 따라 UI 활성화/비활성화."""
@@ -1197,8 +1203,8 @@ class LauncherWindow(QWidget):
 
     def _page_input(self):
         w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 8, 0, 0); v.setSpacing(10)
-        v.addWidget(self._sect("치지직 채널 확인"))
         v.addSpacing(55);
+        v.addWidget(self._sect("치지직 채널 확인"))
         v.addWidget(self._muted("치지직 채널  —  URL · 채널명 · UUID 아무거나"))
         self.input = QLineEdit()
         self.input.setPlaceholderText("https://chzzk.naver.com/live/…  또는  채널명")
