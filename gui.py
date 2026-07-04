@@ -297,13 +297,13 @@ class ZomboidAdapter(GameAdapter):
         "backroom":            "백룸",
         "missile":             "미사일 폭격",
         "random_weapon":       "랜덤 무기 (미구현)",
-        "random_skill_potion": "랜덤 스킬 물약 (미구현)",
+        "random_skill_potion": "신체 강화 혈청",
         "vehicle_kit":         "차량소환 키트 (미구현)",
         "revive_ticket":       "즉시부활 티켓 (미구현)",
         "cdda_spawn":          "CDDA 소환 (미구현)",
         "secret_passage_kit":  "비밀통로 키트 (미구현)",
         "horde_night":         "호드나이트 (미구현)",
-        "rise_up_dead_man":    "라이즈 업 데드 맨 (미구현)",
+        "rise_up_dead_man":    "강령술",
     }
 
     # 금액(원) -> featureId. 유저가 GUI에서 자유롭게 재배정 가능(reward_tiers).
@@ -314,8 +314,10 @@ class ZomboidAdapter(GameAdapter):
         5000:   "zombie_roulette",
         10000:  "sprinter5",
         20000:  "bandit_melee",
+        30000:  "random_skill_potion",
         35000:  "vaccine",
         40000:  "bandit_ranged",
+        100000: "rise_up_dead_man",
         150000: "missile",
     }
 
