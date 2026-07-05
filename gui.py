@@ -47,7 +47,7 @@ from PyQt5.QtWidgets import (
 #    3) JSON 객체       {"이름":"uuid", ...}  또는  {"whitelist":[...]}
 
 
-VERSION = "v2.2.4"
+VERSION = "v2.4.0"
 
 
 
@@ -300,7 +300,7 @@ class ZomboidAdapter(GameAdapter):
         "random_skill_potion": "신체 강화 혈청",
         "vehicle_kit":         "차량소환 키트 (미구현)",
         "revive_ticket":       "즉시부활 티켓 (미구현)",
-        "cdda_spawn":          "CDDA 소환 (미구현)",
+        "mutant_spawn":        "특수좀비 소환",
         "secret_passage_kit":  "비밀통로 키트 (미구현)",
         "horde_night":         "호드나이트 (미구현)",
         "rise_up_dead_man":    "강령술",
@@ -309,15 +309,16 @@ class ZomboidAdapter(GameAdapter):
     # 금액(원) -> featureId. 유저가 GUI에서 자유롭게 재배정 가능(reward_tiers).
     # 이 값은 config.json에 reward_tiers가 없을 때(첫 실행/구버전 마이그레이션)의 기본값.
     DEFAULT_REWARD_TIERS = {
-        1000:   "debuff_roulette",
-        2000:   "buff_roulette",
-        5000:   "zombie_roulette",
+        1000:   "buff_roulette",
+        2000:   "debuff_roulette",
+        3000:   "zombie_roulette",
+        7000:   "vaccine",
         10000:  "sprinter5",
         20000:  "bandit_melee",
         30000:  "random_skill_potion",
-        35000:  "vaccine",
-        40000:  "bandit_ranged",
-        100000: "rise_up_dead_man",
+        40000:  "mutant_spawn",
+        50000:  "bandit_ranged",
+        600000: "rise_up_dead_man",
         150000: "missile",
     }
 
