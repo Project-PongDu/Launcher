@@ -137,7 +137,7 @@ def resource_path(rel):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, rel)
 
-ICON_FILE = "PuppetAPI_smart.ico"
+ICON_FILE = "pongdu.ico"
 
 def extract_uuid(text: str):
     """입력 어디에 있든 32자리 hex(=채널 UUID)를 뽑는다. URL/라이브URL/생UUID 다 처리."""
@@ -911,7 +911,7 @@ class MainWindow(QWidget):
     def __init__(self, preset=None):
         super().__init__()
         self.preset = preset or {}        # 런처에서 넘어온 {channel,uuid,name,autostart}
-        self.setWindowTitle("치지직 API Launcher  "+VERSION)
+        self.setWindowTitle("PongDu Launcher  "+VERSION)
         ico = resource_path(ICON_FILE)
         if os.path.exists(ico):
             self.setWindowIcon(QIcon(ico))
@@ -1454,7 +1454,7 @@ class MainGuard(QObject):
 class LauncherWindow(QWidget):
     def __init__(self, preset=None):
         super().__init__()
-        self.setWindowTitle("치지직 API Launcher  "+VERSION)
+        self.setWindowTitle("PongDu Launcher  "+VERSION)
         ico = resource_path(ICON_FILE)
         if os.path.exists(ico):
             self.setWindowIcon(QIcon(ico))
