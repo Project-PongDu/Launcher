@@ -50,7 +50,7 @@ from PyQt5.QtWidgets import (
 #    3) JSON 객체       {"이름":"uuid", ...}  또는  {"whitelist":[...]}
 
 
-VERSION = "v3.2.0"
+VERSION = "v3.2.1"
 
 
 
@@ -296,20 +296,20 @@ class ZomboidAdapter(GameAdapter):
         "vaccine":             "백신",
         "sprinter5":           "스프린터 5마리",
         "bandit_melee":        "암살자 파견 (근접)",
-        "bandit_ranged":       "암살자 파견 (원거리)",
-        "missile":             "미사일 폭격",
         "random_skill_potion": "신체 강화 혈청",
         "mutant_spawn":        "특수좀비 소환",
-        
+        "bandit_ranged":       "암살자 파견 (원거리)",
+        "missile":             "미사일 폭격",
+        "rise_up_dead_man":    "강령술",
+
         "vehicle_kit":         "차량소환 키트 (미구현)",
         "revive_ticket":       "즉시부활 티켓 (미구현)",
         "secret_passage_kit":  "비밀통로 키트 (미구현)",
         "horde_night":         "호드나이트 (미구현)",
-        "rise_up_dead_man":    "강령술",
 
         #미사용
-        "exile":               "추방 텔레포트",
-        "backroom":            "백룸",
+        "exile":               "산타마을 유배 (삭제예정)",
+        "backroom":            "백룸 (삭제예정)",
     }
 
     # 금액(원) -> featureId. 유저가 GUI에서 자유롭게 재배정 가능(reward_tiers).
