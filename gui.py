@@ -50,11 +50,18 @@ from PyQt5.QtWidgets import (
 #    3) JSON 객체       {"이름":"uuid", ...}  또는  {"whitelist":[...]}
 
 
+
+
+
 VERSION = "v3.2.1"
 
+WHITELIST_URL = "https://raw.githubusercontent.com/Project-PongDu/Whitelist/refs/heads/main/streamer%20whitelist.json"
 
 
-WHITELIST_URL = "https://raw.githubusercontent.com/t3qquq/myPZ-Configs/refs/heads/main/streamer%20whitelist.json"
+
+
+
+
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 FORCE_ONLINE = False
 
