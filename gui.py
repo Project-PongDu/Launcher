@@ -67,7 +67,7 @@ from PyQt5.QtWidgets import (
 
 
 
-VERSION = "v3.3.0"
+VERSION = "v3.3.2"
 
 WHITELIST_URL = "https://raw.githubusercontent.com/Project-PongDu/Whitelist/refs/heads/main/streamer%20whitelist.json"
 
@@ -510,15 +510,15 @@ class ZomboidAdapter(GameAdapter):
     FEATURES = {
         "buff_roulette":       "버프 룰렛",
         "debuff_roulette":     "디버프 룰렛",
-        "zombie_roulette":     "좀비 룰렛",
         "random_weapon":       "랜덤 무기",
+        "zombie_roulette":     "좀비 룰렛",
         "vaccine":             "백신",
         "sprinter5":           "스프린터 5마리",
-        "bandit_melee":        "암살자 파견 (근접)",
+        "random_teleport":     "랜덤 텔레포트",
         "random_skill_potion": "신체 강화 혈청",
         "mutant_spawn":        "특수좀비 소환",
-        "bandit_ranged":       "암살자 파견 (원거리)",
         "missile":             "미사일 폭격",
+        "zombie_rain":         "좀비 레인",
         "rise_up_dead_man":    "강령술",
 
         "vehicle_kit":         "차량소환 키트 (미구현)",
@@ -527,6 +527,8 @@ class ZomboidAdapter(GameAdapter):
         "horde_night":         "호드나이트 (미구현)",
 
         #미사용
+        "bandit_melee":        "암살자 파견 (근접)",
+        "bandit_ranged":       "암살자 파견 (원거리)",
         "exile":               "산타마을 유배 (삭제예정)",
         "backroom":            "백룸 (삭제예정)",
     }
@@ -535,16 +537,16 @@ class ZomboidAdapter(GameAdapter):
     # 이 값은 config.json에 reward_tiers가 없을 때(첫 실행/구버전 마이그레이션)의 기본값.
     DEFAULT_REWARD_TIERS = {
         1000:   "buff_roulette",
-        2000:   "debuff_roulette",
-        3000:   "zombie_roulette",
-        5000:   "random_weapon",
+        1100:   "debuff_roulette",
+        3000:   "random_weapon",
+        5000:   "zombie_roulette",
         7000:   "vaccine",
         10000:  "sprinter5",
-        20000:  "bandit_melee",
-        30000:  "random_skill_potion",
-        40000:  "mutant_spawn",
-        50000:  "bandit_ranged",
-        150000: "missile",
+        15000:  "random_teleport",
+        20000:  "random_skill_potion",
+        30000:  "mutant_spawn",
+        100000: "missile",
+        150000: "zombie_rain",
         200000: "rise_up_dead_man",
     }
 
