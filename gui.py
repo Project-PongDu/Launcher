@@ -67,7 +67,7 @@ from PyQt5.QtWidgets import (
 
 
 
-VERSION = "v3.3.2"
+VERSION = "v3.4.0"
 
 WHITELIST_URL = "https://raw.githubusercontent.com/Project-PongDu/Whitelist/refs/heads/main/streamer%20whitelist.json"
 
@@ -517,20 +517,21 @@ class ZomboidAdapter(GameAdapter):
         "random_teleport":     "랜덤 텔레포트",
         "random_skill_potion": "신체 강화 혈청",
         "mutant_spawn":        "특수좀비 소환",
+        "inv_save_ticket":     "인벤토리 세이브 티켓",
         "missile":             "미사일 폭격",
         "zombie_rain":         "좀비 레인",
         "rise_up_dead_man":    "강령술",
 
-        "vehicle_kit":         "차량소환 키트 (미구현)",
-        "revive_ticket":       "즉시부활 티켓 (미구현)",
-        "secret_passage_kit":  "비밀통로 키트 (미구현)",
-        "horde_night":         "호드나이트 (미구현)",
+        # "vehicle_kit":         "차량소환 키트 (미구현)",
+        # "revive_ticket":       "즉시부활 티켓 (미구현)",
+        # "secret_passage_kit":  "비밀통로 키트 (미구현)",
+        # "horde_night":         "호드나이트 (미구현)",
 
         #미사용
         "bandit_melee":        "암살자 파견 (근접)",
         "bandit_ranged":       "암살자 파견 (원거리)",
-        "exile":               "산타마을 유배 (삭제예정)",
-        "backroom":            "백룸 (삭제예정)",
+        # "exile":               "산타마을 유배 (삭제예정)",
+        # "backroom":            "백룸 (삭제예정)",
     }
 
     # 금액(원) -> featureId. 유저가 GUI에서 자유롭게 재배정 가능(reward_tiers).
@@ -538,13 +539,14 @@ class ZomboidAdapter(GameAdapter):
     DEFAULT_REWARD_TIERS = {
         1000:   "buff_roulette",
         1100:   "debuff_roulette",
-        3000:   "random_weapon",
-        5000:   "zombie_roulette",
-        7000:   "vaccine",
+        2000:   "random_weapon",
+        3000:   "zombie_roulette",
+        5000:   "vaccine",
         10000:  "sprinter5",
         15000:  "random_teleport",
         20000:  "random_skill_potion",
         30000:  "mutant_spawn",
+        50000:  "inv_save_ticket",
         100000: "missile",
         150000: "zombie_rain",
         200000: "rise_up_dead_man",
