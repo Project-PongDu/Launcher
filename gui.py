@@ -67,7 +67,7 @@ from PyQt5.QtWidgets import (
 
 
 
-VERSION = "v3.4.0"
+VERSION = "v3.5.0"
 
 WHITELIST_URL = "https://raw.githubusercontent.com/Project-PongDu/Whitelist/refs/heads/main/streamer%20whitelist.json"
 
@@ -513,6 +513,7 @@ class ZomboidAdapter(GameAdapter):
         "random_weapon":       "랜덤 무기",
         "zombie_roulette":     "좀비 룰렛",
         "vaccine":             "백신",
+        "vehicle_drop":        "차량 공중보급",
         "sprinter5":           "스프린터 5마리",
         "random_teleport":     "랜덤 텔레포트",
         "random_skill_potion": "신체 강화 혈청",
@@ -522,7 +523,6 @@ class ZomboidAdapter(GameAdapter):
         "zombie_rain":         "좀비 레인",
         "rise_up_dead_man":    "강령술",
 
-        # "vehicle_kit":         "차량소환 키트 (미구현)",
         # "revive_ticket":       "즉시부활 티켓 (미구현)",
         # "secret_passage_kit":  "비밀통로 키트 (미구현)",
         # "horde_night":         "호드나이트 (미구현)",
@@ -542,6 +542,7 @@ class ZomboidAdapter(GameAdapter):
         2000:   "random_weapon",
         3000:   "zombie_roulette",
         5000:   "vaccine",
+        7000:   "vehicle_drop",
         10000:  "sprinter5",
         15000:  "random_teleport",
         20000:  "random_skill_potion",
