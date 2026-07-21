@@ -52,7 +52,7 @@ from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton, QComboBox,
     QTextEdit, QVBoxLayout, QHBoxLayout, QFileDialog, QFrame,
-    QCheckBox, QStackedWidget, QMessageBox,
+    QCheckBox, QStackedWidget, QMessageBox, QDialog, QScrollArea,
 )
 
 
@@ -67,7 +67,7 @@ from PyQt5.QtWidgets import (
 
 
 
-VERSION = "v3.5.0"
+VERSION = "v3.6.0"
 
 WHITELIST_URL = "https://raw.githubusercontent.com/Project-PongDu/Whitelist/refs/heads/main/streamer%20whitelist.json"
 
@@ -1186,6 +1186,188 @@ def make_header() -> QWidget:
     return bar
 
 
+
+class RewardPresetDialog(QDialog):
+    """리워드 프리셋 편집 창 — 편집·불러오기·초기화·저장을 한 곳에서 처리.
+       저장하면 reward_preset.json 에 기록되고, MainWindow._load_reward_tiers 가 이 파일을 읽는다."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("리워드 프리셋 편집")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        ico = resource_path(ICON_FILE)
+        if os.path.exists(ico):
+            self.setWindowIcon(QIcon(ico))
+        self.setFixedSize(560, 640)
+        self.rows = []      # [(row_widget, amt_edit, feat_combo, del_btn), ...]
+        self._build()
+        self.setStyleSheet(DARK_QSS)
+        # 저장된 프리셋이 있으면 그걸, 없으면 기본 티어를 편집 시작점으로
+        saved = load_reward_preset()
+        self._load_rows(saved if saved else ZomboidAdapter.DEFAULT_REWARD_TIERS)
+
+    # --- 빌드 ---
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18); root.setSpacing(10)
+        root.addWidget(self._muted("금액 ↔ 기능 편집 후 ‘저장’ (정확히 일치하는 금액만 발동)"))
+
+        # 행이 늘어날 수 있으므로 스크롤 영역 안에 티어 테이블
+        self.tiers_host = QWidget()
+        self.tiers_box = QVBoxLayout(self.tiers_host)
+        self.tiers_box.setContentsMargins(0, 0, 6, 0); self.tiers_box.setSpacing(4)
+        self.tiers_box.setAlignment(Qt.AlignTop)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self.tiers_host)
+        root.addWidget(scroll, 1)
+
+        trow = QHBoxLayout()
+        add_btn = QPushButton("+ 행 추가"); add_btn.setObjectName("link")
+        add_btn.clicked.connect(lambda: self._add_row())
+        trow.addWidget(add_btn)
+        trow.addStretch(1)
+        import_btn = QPushButton("불러오기"); import_btn.setObjectName("link")
+        import_btn.clicked.connect(self._import)
+        trow.addWidget(import_btn)
+        reset_btn = QPushButton("초기화"); reset_btn.setObjectName("link")
+        reset_btn.clicked.connect(self._reset)
+        trow.addWidget(reset_btn)
+        root.addLayout(trow)
+
+        sep = QFrame(); sep.setObjectName("sep"); sep.setFixedHeight(1)
+        root.addWidget(sep)
+
+        brow = QHBoxLayout()
+        self.status = QLabel(""); self.status.setObjectName("muted")
+        brow.addWidget(self.status, 1)
+        save_btn = QPushButton("저장"); save_btn.setObjectName("start")
+        save_btn.clicked.connect(self._save)
+        brow.addWidget(save_btn)
+        close_btn = QPushButton("닫기")
+        close_btn.clicked.connect(self.accept)
+        brow.addWidget(close_btn)
+        root.addLayout(brow)
+
+    def _muted(self, t):
+        l = QLabel(t); l.setObjectName("muted"); return l
+
+    def _status_msg(self, text, ok):
+        self.status.setText(text)
+        self.status.setStyleSheet("color:#5dcaa5;" if ok else "color:#e24b4a;")
+
+    # --- 행 관리 ---
+    def _clear_rows(self):
+        for row, _amt, _feat, _del in self.rows:
+            self.tiers_box.removeWidget(row); row.deleteLater()
+        self.rows = []
+
+    def _load_rows(self, tiers):
+        """{amount: featureId} -> 편집 테이블 재구성 (금액 오름차순). featureId 미등록 항목은 스킵."""
+        self._clear_rows()
+        items = []
+        for k, v in tiers.items():
+            try:
+                amt = int(k)
+            except (TypeError, ValueError):
+                continue
+            if amt > 0 and v in ZomboidAdapter.FEATURES:
+                items.append((amt, v))
+        for amt, fid in sorted(items):
+            self._add_row(amt, fid)
+
+    def _add_row(self, amount=None, feature_id=None):
+        row = QWidget()
+        h = QHBoxLayout(row); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(6)
+        amt_edit = QLineEdit("" if amount is None else str(amount))
+        amt_edit.setPlaceholderText("금액")
+        amt_edit.setFixedWidth(90)
+        feat_combo = QComboBox()
+        for fid, label in ZomboidAdapter.FEATURES.items():
+            feat_combo.addItem(label, fid)
+        if feature_id:
+            idx = feat_combo.findData(feature_id)
+            if idx >= 0:
+                feat_combo.setCurrentIndex(idx)
+        del_btn = QPushButton("✕"); del_btn.setObjectName("link"); del_btn.setFixedWidth(28)
+        del_btn.clicked.connect(lambda: self._remove_row(row))
+        h.addWidget(amt_edit); h.addWidget(feat_combo, 1); h.addWidget(del_btn)
+        self.tiers_box.addWidget(row)
+        self.rows.append((row, amt_edit, feat_combo, del_btn))
+
+    def _remove_row(self, row):
+        for i, (w, _amt, _feat, _del) in enumerate(self.rows):
+            if w is row:
+                self.rows.pop(i)
+                break
+        self.tiers_box.removeWidget(row)
+        row.deleteLater()
+
+    # --- 저장 / 불러오기 / 초기화 ---
+    def _collect(self):
+        """편집 테이블 -> {amount: featureId}. 문제 있으면 status 표시 후 None."""
+        tiers = {}
+        for _row, amt_edit, feat_combo, _del in self.rows:
+            txt = amt_edit.text().strip().replace(",", "")
+            if not txt:
+                continue
+            try:
+                amt = int(txt)
+            except ValueError:
+                self._status_msg(f"⚠ 잘못된 금액: {txt!r}", ok=False); return None
+            if amt <= 0:
+                self._status_msg(f"⚠ 금액은 1 이상이어야 함: {amt}", ok=False); return None
+            if amt in tiers:
+                self._status_msg(f"⚠ 금액 중복: {amt:,}", ok=False); return None
+            tiers[amt] = feat_combo.currentData()
+        if not tiers:
+            self._status_msg("⚠ 저장할 티어가 없음 — 최소 1개 필요", ok=False); return None
+        return tiers
+
+    def _save(self):
+        tiers = self._collect()
+        if tiers is None:
+            return
+        save_reward_preset(tiers)               # Zomboid 폴더의 reward_preset.json에 기록
+        self._status_msg(f"저장됨 ({len(tiers)}개)", ok=True)
+
+    def _import(self):
+        """리워드 프리셋(JSON, {amount: featureId}) 파일 -> 편집 테이블에 로드.
+           바로 저장하지 않음 — 내용 확인 후 ‘저장’을 눌러야 실제 적용."""
+        fn, _ = QFileDialog.getOpenFileName(
+            self, "리워드 프리셋 불러오기", str(Path.home()), "JSON (*.json)")
+        if not fn:
+            return
+        try:
+            raw = json.loads(Path(fn).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            self._status_msg(f"⚠ 불러오기 실패: {e}", ok=False)
+            return
+        if not isinstance(raw, dict) or not raw:
+            self._status_msg("⚠ 형식이 올바르지 않음 ({amount: featureId} JSON)", ok=False)
+            return
+        self._load_rows(raw)
+        if not self.rows:
+            # 전부 무효 — 이전 테이블은 이미 날아갔으므로 기본 티어로 복구
+            self._load_rows(ZomboidAdapter.DEFAULT_REWARD_TIERS)
+            self._status_msg("⚠ 유효한 티어가 없음 (featureId 불일치)", ok=False)
+            return
+        self._status_msg(f"불러옴 ({len(self.rows)}개) — ‘저장’을 눌러야 적용됨", ok=True)
+
+    def _reset(self):
+        box = QMessageBox(self)
+        box.setWindowTitle("리워드 프리셋 초기화")
+        box.setText("저장된 리워드 프리셋을 삭제하고 기본 티어로 되돌립니다.\n계속할까요?")
+        yes_btn = box.addButton("초기화", QMessageBox.DestructiveRole)
+        box.addButton("취소", QMessageBox.RejectRole)
+        box.exec_()
+        if box.clickedButton() is not yes_btn:
+            return
+        reset_reward_preset()                   # reward_preset.json 삭제 -> 기본 티어 사용 상태
+        self._load_rows(ZomboidAdapter.DEFAULT_REWARD_TIERS)
+        self._status_msg("초기화됨 — 기본 티어 사용", ok=True)
+
+
 class MainWindow(QWidget):
     def __init__(self, preset=None):
         super().__init__()
@@ -1194,19 +1376,14 @@ class MainWindow(QWidget):
         ico = resource_path(ICON_FILE)
         if os.path.exists(ico):
             self.setWindowIcon(QIcon(ico))
-        self.resize(620, 980)
-        self.setFixedSize(620, 980)
+        self.resize(620, 620)
+        self.setFixedSize(620, 620)
         self.adapter = ZomboidAdapter()
         self.worker = None
         self.cfg = load_config()
         self._returning = False                       # 게이트 복귀 중복 방지
         self.guard = None                             # PZ 종료 + 19세 전환 감시 (연동 중에만)
-        self.tier_row_widgets = []                    # [(row_widget, amt_edit, feat_combo, del_btn), ...]
-        # reward_tiers는 _build()가 편집 테이블을 그릴 때 이미 필요하므로 그 전에 로드.
-        # 우선순위: 게이트에서 넘어온 preset["reward_tiers"](방금 import) > reward_preset.json > 기본값
-        # 프리셋(json)이 존재하면 편집 잠금 — 티어를 바꾸려면 게이트에서 초기화부터.
-        # (판정 로직은 _preset_exists() 하나로 통합 — 저장 직후 재판정도 동일 함수 사용)
-        self.reward_preset_locked = self._preset_exists()
+        # 티어 편집은 게이트(RewardPresetDialog)로 이동 — 여기선 reward_preset.json만 읽는다.
         self._load_reward_tiers()
         self._build()
         self._restore()
@@ -1261,32 +1438,6 @@ class MainWindow(QWidget):
 
         root.addWidget(self._sep())
 
-        # 리워드 티어 (금액 <-> 기능 편집)
-        root.addWidget(self._muted("리워드 티어  —  금액 ↔ 기능 편집 후 ‘저장’ (정확히 일치하는 금액만 발동)"))
-        self.tiers_box = QVBoxLayout(); self.tiers_box.setSpacing(4)
-        root.addLayout(self.tiers_box)
-        for amt, fid in sorted(self.adapter.reward_tiers.items()):
-            self._add_tier_row(amt, fid)
-
-        tctl = QHBoxLayout()
-
-        self.add_row_btn = QPushButton("+ 행 추가")
-        self.add_row_btn.setObjectName("link")
-        self.add_row_btn.clicked.connect(lambda: self._add_tier_row())
-        tctl.addWidget(self.add_row_btn)
-
-        tctl.addStretch(1)
-
-        self.save_tiers_btn = QPushButton("저장")
-        self.save_tiers_btn.clicked.connect(self._save_tiers)
-        tctl.addWidget(self.save_tiers_btn)
-
-        root.addLayout(tctl)
-
-        self._apply_tier_lock()
-
-        root.addWidget(self._sep())
-
         # 테스트 후원
         trow = QHBoxLayout()
         trow.addWidget(self._muted("테스트 후원"))
@@ -1311,91 +1462,6 @@ class MainWindow(QWidget):
     def _sep(self):
         f = QFrame(); f.setObjectName("sep"); f.setFixedHeight(1); return f
 
-    # 잠금 상태 콤보박스: 드롭다운 화살표까지 완전히 안 보이게 (조작 여지 자체를 시각적으로 제거)
-    LOCKED_COMBO_QSS = ("QComboBox::drop-down { width:0px; border:none; }"
-                         "QComboBox::down-arrow { width:0px; height:0px; image:none; }")
-
-    def _lock_combo(self, combo):
-        combo.setEnabled(False)
-        combo.setStyleSheet(self.LOCKED_COMBO_QSS)
-
-    # --- 리워드 티어 (금액 <-> featureId) ---
-    def _add_tier_row(self, amount=None, feature_id=None):
-        """편집 테이블에 한 행(금액 입력 + 기능 콤보 + 삭제버튼) 추가."""
-        row = QWidget()
-        h = QHBoxLayout(row); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(6)
-        amt_edit = QLineEdit("" if amount is None else str(amount))
-        amt_edit.setPlaceholderText("금액")
-        amt_edit.setFixedWidth(90)
-        feat_combo = QComboBox()
-        for fid, label in self.adapter.FEATURES.items():
-            feat_combo.addItem(label, fid)
-        if feature_id:
-            idx = feat_combo.findData(feature_id)
-            if idx >= 0:
-                feat_combo.setCurrentIndex(idx)
-        del_btn = QPushButton("✕"); del_btn.setObjectName("link"); del_btn.setFixedWidth(28)
-        del_btn.clicked.connect(lambda: self._remove_tier_row(row))
-        if self.reward_preset_locked:
-            amt_edit.setEnabled(False)
-            self._lock_combo(feat_combo)
-            del_btn.hide()
-        h.addWidget(amt_edit); h.addWidget(feat_combo, 1); h.addWidget(del_btn)
-        self.tiers_box.addWidget(row)
-        self.tier_row_widgets.append((row, amt_edit, feat_combo, del_btn))
-
-    def _remove_tier_row(self, row):
-        for i, (w, _amt, _feat, _del) in enumerate(self.tier_row_widgets):
-            if w is row:
-                self.tier_row_widgets.pop(i)
-                break
-        self.tiers_box.removeWidget(row)
-        row.deleteLater()
-
-    def _save_tiers(self):
-        """편집 테이블 내용 -> adapter.reward_tiers 반영 + reward_preset.json 자동 내보내기 + 테스트 콤보 갱신."""
-        new_tiers = {}
-        for _row, amt_edit, feat_combo, _del in self.tier_row_widgets:
-            txt = amt_edit.text().strip().replace(",", "")
-            if not txt:
-                continue
-            try:
-                amt = int(txt)
-            except ValueError:
-                self._log(f"⚠ 잘못된 금액 무시: {txt!r}"); continue
-            if amt <= 0:
-                continue
-            if amt in new_tiers:
-                self._log(f"⚠ 금액 중복({amt:,}) — 나중 값으로 덮어씀")
-            new_tiers[amt] = feat_combo.currentData()
-        if not new_tiers:
-            self._log("⚠ 저장할 티어가 없음 — 최소 1개는 있어야 함"); return
-        self.adapter.reward_tiers = new_tiers
-        save_reward_preset(new_tiers)               # 저장 = 내보내기 (Zomboid 폴더에 자동 기록)
-        self._build_test_combo()
-        self._log(f"리워드 티어 저장됨 ({len(new_tiers)}개) → {PRESET_PATH}")
-        
-        # 저장 완료 순간, reward_preset.json이 이미 기록된 뒤라 _preset_exists()가 True로 재판정됨
-        self.reward_preset_locked = self._preset_exists()
-        self._apply_tier_lock()
-        self._log("프리셋이 적용되어 편집이 잠겨 있습니다. (초기화하려면 게이트로 돌아가세요)")
-
-    def _preset_exists(self):
-        """잠금 판정 조건 — 게이트에서 방금 import했거나, reward_preset.json이 이미 존재하면 True.
-           __init__(최초 진입)과 _save_tiers(저장 직후) 둘 다 이 함수 하나로 재판정한다."""
-        return ("reward_tiers" in self.preset) or PRESET_PATH.exists()
-
-    def _apply_tier_lock(self):
-        """현재 reward_preset_locked 상태에 따라 UI 활성화/비활성화."""
-        if not self.reward_preset_locked:
-            return
-        self.add_row_btn.hide()
-        self.save_tiers_btn.hide()
-        for row, amt_edit, feat_combo, del_btn in self.tier_row_widgets:
-            amt_edit.setEnabled(False)
-            self._lock_combo(feat_combo)
-            del_btn.hide()
-
     def _build_test_combo(self):
         self.test_combo.clear()
         for amt, fid in sorted(self.adapter.reward_tiers.items()):
@@ -1404,9 +1470,9 @@ class MainWindow(QWidget):
 
     # --- 설정 복원/저장 ---
     def _load_reward_tiers(self):
-        """게이트 import(preset) > Zomboid/reward_preset.json > 코드 기본값 순.
+        """Zomboid/reward_preset.json > 코드 기본값 순. (편집은 게이트의 RewardPresetDialog에서)
            featureId가 FEATURES에 없는 항목/파싱 안 되는 키는 무시(방어적 마이그레이션)."""
-        raw = self.preset.get("reward_tiers") or load_reward_preset()
+        raw = load_reward_preset()
         if not isinstance(raw, dict) or not raw:
             return
         loaded = {}
@@ -1750,7 +1816,6 @@ class LauncherWindow(QWidget):
         self._live = False; self._pz = False; self._adult = False; self._connected = False
         self._adult_warned = False
         self.main_win = None
-        self.reward_preset = None      # 체크리스트 화면에서 import한 {amount: featureId, ...} (선택)
         self.cfg = load_config()       # opt_mode 등 (MainWindow와 같은 config.json 공유)
         self._game_dir = find_pz_dir() # PZ 설치 폴더 (최적화용, 못 찾으면 None)
         self._build()
@@ -1835,17 +1900,14 @@ class LauncherWindow(QWidget):
         v.addSpacing(6)
 
         prow = QHBoxLayout(); prow.addStretch(1)
-        self.reset_cfg_btn = QPushButton("초기화"); self.reset_cfg_btn.setObjectName("link")
-        self.reset_cfg_btn.clicked.connect(self._on_reset_config)
-        prow.addWidget(self.reset_cfg_btn)
-        self.import_cfg_btn = QPushButton("리워드 프리셋 불러오기"); self.import_cfg_btn.setObjectName("link")
-        self.import_cfg_btn.clicked.connect(lambda: self._import_reward_preset(self.preset_status))
-        prow.addWidget(self.import_cfg_btn)
+        self.edit_preset_btn = QPushButton("리워드 프리셋 편집하기"); self.edit_preset_btn.setObjectName("link")
+        self.edit_preset_btn.clicked.connect(self._open_preset_dialog)
+        prow.addWidget(self.edit_preset_btn)
         self.preset_status = self._muted(""); self.preset_status.setAlignment(Qt.AlignCenter)
         prow.addWidget(self.preset_status)
         prow.addStretch(1)
         v.addLayout(prow)
-        self._refresh_config_buttons()
+        self._refresh_preset_status()
 
         v.addSpacing(4)
         row = QHBoxLayout(); row.addStretch(1)
@@ -1858,58 +1920,21 @@ class LauncherWindow(QWidget):
         v.addLayout(row); v.addStretch(1)
         return w
 
-    def _refresh_config_buttons(self):
-        """reward_preset.json 존재 여부로 버튼 하나만 표시: 있으면 초기화, 없으면 불러오기."""
-        exists = PRESET_PATH.exists()
-        self.reset_cfg_btn.setVisible(exists)
-        self.import_cfg_btn.setVisible(not exists)
+    def _refresh_preset_status(self):
+        """저장된 reward_preset.json 유무를 상태 라벨에 표시 (편집창 닫힐 때마다 갱신)."""
+        saved = load_reward_preset() if PRESET_PATH.exists() else None
+        if saved:
+            self.preset_status.setText(f"프리셋 적용됨 ({len(saved)}개)")
+            self.preset_status.setStyleSheet("color:#5dcaa5;")
+        else:
+            self.preset_status.setText("기본 티어 사용")
+            self.preset_status.setStyleSheet("")
 
-    def _on_reset_config(self):
-        box = QMessageBox(self)
-        box.setWindowTitle("리워드 프리셋 초기화")
-        box.setText("저장된 리워드 프리셋을 삭제하고 기본 티어로 되돌립니다.\n계속할까요?")
-        yes_btn = box.addButton("초기화", QMessageBox.DestructiveRole)
-        box.addButton("취소", QMessageBox.RejectRole)
-        box.exec_()
-        if box.clickedButton() is not yes_btn:
-            return
-        reset_reward_preset()
-        self.reward_preset = None
-        self.preset_status.setText("초기화됨 — 기본 티어 사용")
-        self.preset_status.setStyleSheet("color:#5dcaa5;")
-        self._refresh_config_buttons()
-
-    def _import_reward_preset(self, status_label):
-        """리워드 프리셋(JSON, {amount: featureId}) 불러오기. 실제 반영은 MainWindow로 넘어간 뒤
-           reward_tiers 로 로드됨 (_go_main 참고) — 여기선 파싱/검증만 하고 들고만 있는다."""
-        fn, _ = QFileDialog.getOpenFileName(
-            self, "리워드 프리셋 불러오기", str(Path.home()), "JSON (*.json)")
-        if not fn:
-            return
-        try:
-            raw = json.loads(Path(fn).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
-            status_label.setText(f"⚠ 불러오기 실패: {e}")
-            return
-        if not isinstance(raw, dict) or not raw:
-            status_label.setText("⚠ 형식이 올바르지 않음 ({amount: featureId} JSON)")
-            return
-        valid = {}
-        for k, v in raw.items():
-            try:
-                amt = int(k)
-            except (TypeError, ValueError):
-                continue
-            if amt > 0 and v in ZomboidAdapter.FEATURES:
-                valid[k] = v
-        if not valid:
-            status_label.setText("⚠ 유효한 티어가 없음 (featureId 불일치)")
-            return
-        self.reward_preset = valid
-        save_reward_preset({int(k): v for k, v in valid.items()})   # Zomboid 폴더에 설치 -> 이후 실행에도 유지
-        self._refresh_config_buttons()
-        status_label.setText(f"프리셋 적용됨 ({len(valid)}개)")
-        status_label.setStyleSheet("color:#5dcaa5;")
+    def _open_preset_dialog(self):
+        """리워드 프리셋 편집 창 — 편집·불러오기·초기화·저장을 전부 이 창에서 처리."""
+        dlg = RewardPresetDialog(self)
+        dlg.exec_()
+        self._refresh_preset_status()
 
     def _check_row(self):
         w = QWidget(); l = QHBoxLayout(w); l.setContentsMargins(120, 0, 0, 0); l.setSpacing(10)
@@ -2097,8 +2122,6 @@ class LauncherWindow(QWidget):
         self.core.stop_poll()
         preset = {"channel": self.input.text().strip(),
                   "uuid": self._uuid, "name": self._name, "autostart": True}
-        if self.reward_preset:
-            preset["reward_tiers"] = self.reward_preset   # MainWindow._load_reward_tiers가 최우선으로 사용
         self.main_win = MainWindow(preset=preset)
         self.main_win.show()
         self.close()
