@@ -67,7 +67,7 @@ from PyQt5.QtWidgets import (
 
 
 
-VERSION = "v3.6.1"
+VERSION = "v3.6.2"
 
 WHITELIST_URL = "https://raw.githubusercontent.com/Project-PongDu/Whitelist/refs/heads/main/streamer%20whitelist.json"
 
@@ -1200,11 +1200,15 @@ class RewardPresetDialog(QDialog):
             self.setWindowIcon(QIcon(ico))
         self.setFixedSize(620, 980)
         self.rows = []      # [(row_widget, amt_edit, feat_combo, del_btn), ...]
+        self.locked = False
         self._build()
         self.setStyleSheet(DARK_QSS)
-        # 저장된 프리셋이 있으면 그걸, 없으면 기본 티어를 편집 시작점으로
+        # 저장된 프리셋이 있으면 그걸 잠금 상태로, 없으면 기본 티어를 편집 상태로 (3.5 잠금 동작 유지)
         saved = load_reward_preset()
         self._load_rows(saved if saved else ZomboidAdapter.DEFAULT_REWARD_TIERS)
+        self._set_locked(bool(saved))
+        if saved:
+            self._status_msg(f"프리셋 적용됨 ({len(self.rows)}개) — ‘다시 편집’으로 잠금 해제", ok=True)
 
     # --- 빌드 ---
     def _build(self):
@@ -1223,16 +1227,16 @@ class RewardPresetDialog(QDialog):
         root.addWidget(scroll, 1)
 
         trow = QHBoxLayout()
-        add_btn = QPushButton("+ 행 추가"); add_btn.setObjectName("link")
-        add_btn.clicked.connect(lambda: self._add_row())
-        trow.addWidget(add_btn)
+        self.add_btn = QPushButton("+ 행 추가"); self.add_btn.setObjectName("link")
+        self.add_btn.clicked.connect(lambda: self._add_row())
+        trow.addWidget(self.add_btn)
         trow.addStretch(1)
-        import_btn = QPushButton("불러오기"); import_btn.setObjectName("link")
-        import_btn.clicked.connect(self._import)
-        trow.addWidget(import_btn)
-        reset_btn = QPushButton("초기화"); reset_btn.setObjectName("link")
-        reset_btn.clicked.connect(self._reset)
-        trow.addWidget(reset_btn)
+        self.import_btn = QPushButton("불러오기"); self.import_btn.setObjectName("link")
+        self.import_btn.clicked.connect(self._import)
+        trow.addWidget(self.import_btn)
+        self.reset_btn = QPushButton("초기화"); self.reset_btn.setObjectName("link")
+        self.reset_btn.clicked.connect(self._reset)
+        trow.addWidget(self.reset_btn)
         root.addLayout(trow)
 
         sep = QFrame(); sep.setObjectName("sep"); sep.setFixedHeight(1)
@@ -1241,9 +1245,12 @@ class RewardPresetDialog(QDialog):
         brow = QHBoxLayout()
         self.status = QLabel(""); self.status.setObjectName("muted")
         brow.addWidget(self.status, 1)
-        save_btn = QPushButton("저장"); save_btn.setObjectName("start")
-        save_btn.clicked.connect(self._save)
-        brow.addWidget(save_btn)
+        self.save_btn = QPushButton("저장"); self.save_btn.setObjectName("start")
+        self.save_btn.clicked.connect(self._save)
+        brow.addWidget(self.save_btn)
+        self.edit_btn = QPushButton("다시 편집")
+        self.edit_btn.clicked.connect(self._unlock)
+        brow.addWidget(self.edit_btn)
         close_btn = QPushButton("닫기")
         close_btn.clicked.connect(self.accept)
         brow.addWidget(close_btn)
@@ -1255,6 +1262,27 @@ class RewardPresetDialog(QDialog):
     def _status_msg(self, text, ok):
         self.status.setText(text)
         self.status.setStyleSheet("color:#5dcaa5;" if ok else "color:#e24b4a;")
+
+    # 잠금 상태 콤보박스: 드롭다운 화살표까지 완전히 안 보이게 (조작 여지 자체를 시각적으로 제거)
+    LOCKED_COMBO_QSS = ("QComboBox::drop-down { width:0px; border:none; }"
+                         "QComboBox::down-arrow { width:0px; height:0px; image:none; }")
+
+    def _set_locked(self, locked):
+        """저장 후 잠금 / ‘다시 편집’으로 해제 (3.5 잠금 UX). 행 위젯·버튼 표시를 일괄 전환."""
+        self.locked = locked
+        for _row, amt_edit, feat_combo, del_btn in self.rows:
+            amt_edit.setEnabled(not locked)
+            feat_combo.setEnabled(not locked)
+            feat_combo.setStyleSheet(self.LOCKED_COMBO_QSS if locked else "")
+            del_btn.setVisible(not locked)
+        self.add_btn.setVisible(not locked)
+        self.import_btn.setVisible(not locked)
+        self.save_btn.setVisible(not locked)
+        self.edit_btn.setVisible(locked)
+
+    def _unlock(self):
+        self._set_locked(False)
+        self._status_msg("편집 모드 — 수정 후 ‘저장’", ok=True)
 
     # --- 행 관리 ---
     def _clear_rows(self):
@@ -1291,6 +1319,11 @@ class RewardPresetDialog(QDialog):
                 feat_combo.setCurrentIndex(idx)
         del_btn = QPushButton("✕"); del_btn.setObjectName("link"); del_btn.setFixedWidth(28)
         del_btn.clicked.connect(lambda: self._remove_row(row))
+        if self.locked:
+            amt_edit.setEnabled(False)
+            feat_combo.setEnabled(False)
+            feat_combo.setStyleSheet(self.LOCKED_COMBO_QSS)
+            del_btn.hide()
         h.addWidget(amt_edit); h.addWidget(feat_combo, 1); h.addWidget(del_btn)
         self.tiers_box.addWidget(row)
         self.rows.append((row, amt_edit, feat_combo, del_btn))
@@ -1329,7 +1362,9 @@ class RewardPresetDialog(QDialog):
         if tiers is None:
             return
         save_reward_preset(tiers)               # Zomboid 폴더의 reward_preset.json에 기록
-        self._status_msg(f"저장됨 ({len(tiers)}개)", ok=True)
+        self._load_rows(tiers)                  # 금액 오름차순으로 재렌더
+        self._set_locked(True)                  # 저장 = 잠금 (‘다시 편집’으로 해제)
+        self._status_msg(f"저장됨 ({len(tiers)}개) — 잠금 상태, ‘다시 편집’으로 수정", ok=True)
 
     def _import(self):
         """리워드 프리셋(JSON, {amount: featureId}) 파일 -> 편집 테이블에 로드.
@@ -1365,6 +1400,7 @@ class RewardPresetDialog(QDialog):
             return
         reset_reward_preset()                   # reward_preset.json 삭제 -> 기본 티어 사용 상태
         self._load_rows(ZomboidAdapter.DEFAULT_REWARD_TIERS)
+        self._set_locked(False)                 # 프리셋이 사라졌으니 바로 편집 가능
         self._status_msg("초기화됨 — 기본 티어 사용", ok=True)
 
 
