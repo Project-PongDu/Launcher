@@ -70,7 +70,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v4.1.0"
+VERSION = "v4.1.1"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -669,7 +669,7 @@ class ZomboidAdapter(GameAdapter):
         "vehicle_drop":        "차량 공중보급",
         "sprinter5":           "스프린터 5마리",
         "random_teleport":     "랜덤 텔레포트",
-        "random_skill_potion": "신체 강화 혈청",
+        "random_skill_potion": "스킬 각성제",
         "mutant_spawn":        "특수좀비 소환",
         "inv_save_ticket":     "인벤토리 세이브 티켓",
         "fire_support":        "화력지원 룰렛",
