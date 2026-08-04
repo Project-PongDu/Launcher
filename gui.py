@@ -70,7 +70,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v4.1.1"
+VERSION = "v4.2.4"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -93,6 +93,9 @@ LOGIN_TIMEOUT       = 300.0   # 브라우저 로그인 대기 한도 (초)
 
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+# config.json 의 force_online=true 로 켜지는 관리자/테스트 모드.
+# 게이트 체크리스트 3종(방송 중 / PZ 실행 / 인게임 접속)을 전부 통과시킨다.
+# 연동 중 감시(MainGuard)도 같은 헬퍼를 쓰므로 PZ 없이도 게이트로 안 튕긴다.
 FORCE_ONLINE = False
 
 # ── 로컬 설정 (게임 유저 폴더 ~/Zomboid 안에 저장 -> rewards.txt 옆이라 찾기 쉬움) ──
@@ -667,7 +670,7 @@ class ZomboidAdapter(GameAdapter):
         "zombie_roulette":     "좀비 룰렛",
         "vaccine":             "백신",
         "vehicle_drop":        "차량 공중보급",
-        "sprinter5":           "스프린터 5마리",
+        "sprinter5":           "뛰좀 소환",
         "random_teleport":     "랜덤 텔레포트",
         "random_skill_potion": "스킬 각성제",
         "mutant_spawn":        "특수좀비 소환",
@@ -677,9 +680,10 @@ class ZomboidAdapter(GameAdapter):
         "zombie_rain":         "좀비 레인",
         "rise_up_dead_man":    "강령술",
 
+        "horde_night":         "호드나이트",
+
         # "revive_ticket":       "즉시부활 티켓 (미구현)",
         # "secret_passage_kit":  "비밀통로 키트 (미구현)",
-        # "horde_night":         "호드나이트 (미구현)",
 
         #미사용
         "bandit_melee":        "암살자 파견 (근접)",
@@ -687,6 +691,14 @@ class ZomboidAdapter(GameAdapter):
         # "exile":               "산타마을 유배 (삭제예정)",
         # "backroom":            "백룸 (삭제예정)",
     }
+
+    # 서버 전체에 영향을 주는 후원(서버후원). 여기 없는 featureId 는 전부 개인후원으로 취급한다.
+    # 카테고리는 featureId 의 고정 속성이라 프리셋 파일 형식({amount: featureId})은 그대로다.
+    SERVER_FEATURES = {"horde_night"}
+
+    @classmethod
+    def feature_category(cls, fid):
+        return "server" if fid in cls.SERVER_FEATURES else "personal"
 
     # 금액(원) -> featureId. 유저가 GUI에서 자유롭게 재배정 가능(reward_tiers).
     # 이 값은 config.json에 reward_tiers가 없을 때(첫 실행/구버전 마이그레이션)의 기본값.
@@ -706,6 +718,7 @@ class ZomboidAdapter(GameAdapter):
         60000: "missile",
         70000: "zombie_rain",
         80000: "rise_up_dead_man",
+        100000: "horde_night",          # 서버후원
     }
 
     def __init__(self):
@@ -777,6 +790,8 @@ async def fetch_live(uuid: str) -> bool:
 
 def pz_running() -> bool:
     """Project Zomboid 클라이언트가 실행 중인지 프로세스 목록으로 확인."""
+    if FORCE_ONLINE:
+        return True
     KEY = "projectzomboid"
     try:                                         # psutil 있으면 우선 (의존성 아님, 있으면 사용)
         import psutil # pyright: ignore[reportMissingModuleSource]
@@ -805,6 +820,8 @@ def pz_running() -> bool:
 def pz_connected() -> bool:
     """pz_status.txt 읽어 인게임 접속 여부 확인.
     형식: CONNECTED|<unix timestamp>  — 10초 이상 갱신 없으면 False (Lua heartbeat 끊긴 것)."""
+    if FORCE_ONLINE:
+        return True
     TIMEOUT = 10
     home = Path.home()
     cands = [
@@ -1273,10 +1290,14 @@ QPushButton#verify:hover { background:#22b384; }
 QPushButton#verify:disabled { background:#2b2e36; color:#5f5e5a; border:1px solid rgba(255,255,255,0.12); }
 QPushButton#stop  { background:#a32d2d; color:#ffe; border:none; font-weight:bold; padding:10px 20px; }
 QPushButton#link  { background:transparent; border:none; color:#85b7eb; padding:2px; }
+QPushButton#cat   { background:#2b2e36; border:1px solid rgba(255,255,255,0.12); color:#9a9ca3; padding:7px 20px; font-size:13px; }
+QPushButton#cat:hover { background:#343843; color:#cfd0d4; }
+QPushButton#cat:checked { background:#1d9e75; border:1px solid #1d9e75; color:#04342c; font-weight:bold; }
 QCheckBox { color:#cfd0d4; font-size:12px; }
 QLabel#muted { color:#9a9ca3; font-size:12px; }
 QLabel#hint  { color:#6f7178; font-size:11px; }
 QLabel#tier  { background:#2b2e36; border-radius:6px; padding:7px 10px; font-size:12px; color:#cfd0d4; }
+QLabel#catsect { color:#5dcaa5; font-size:12px; font-weight:bold; padding:6px 2px 2px 2px; }
 QLabel#brand { font-size:13px; font-weight:bold; color:#e8e8ea; }
 QLabel#ver   { color:#6f7178; font-size:11px; }
 QLabel#sect  { font-size:15px; font-weight:bold; color:#e8e8ea; }
@@ -1308,7 +1329,11 @@ def make_header() -> QWidget:
 
 class RewardPresetDialog(QDialog):
     """리워드 프리셋 편집 창 — 편집·불러오기·초기화·저장을 한 곳에서 처리.
-       저장하면 reward_preset.json 에 기록되고, MainWindow._load_reward_tiers 가 이 파일을 읽는다."""
+       저장하면 reward_preset.json 에 기록되고, MainWindow._load_reward_tiers 가 이 파일을 읽는다.
+       카테고리(개인/서버)는 featureId 의 고정 속성(ZomboidAdapter.SERVER_FEATURES)이라
+       화면만 나눠 보여줄 뿐, 저장 형식은 예전 그대로 {amount: featureId} 평면 구조다."""
+
+    CATEGORIES = (("personal", "개인후원"), ("server", "서버후원"))
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1318,7 +1343,9 @@ class RewardPresetDialog(QDialog):
         if os.path.exists(ico):
             self.setWindowIcon(QIcon(ico))
         self.setFixedSize(620, 800)
-        self.rows = []      # [(row_widget, amt_edit, feat_combo, del_btn), ...]
+        # 카테고리별 [(row_widget, amt_edit, feat_combo, del_btn), ...]
+        self.rows = {key: [] for key, _ in self.CATEGORIES}
+        self.cat = self.CATEGORIES[0][0]
         self.locked = False
         self._build()
         self.setStyleSheet(DARK_QSS)
@@ -1327,7 +1354,7 @@ class RewardPresetDialog(QDialog):
         self._load_rows(saved if saved else ZomboidAdapter.DEFAULT_REWARD_TIERS)
         self._set_locked(bool(saved))
         if saved:
-            self._status_msg(f"프리셋 적용됨 ({len(self.rows)}개) — ‘다시 편집’으로 잠금 해제", ok=True)
+            self._status_msg(f"프리셋 적용됨 ({self._row_count()}개) — ‘다시 편집’으로 잠금 해제", ok=True)
 
     # --- 빌드 ---
     def _build(self):
@@ -1335,15 +1362,33 @@ class RewardPresetDialog(QDialog):
         root.setContentsMargins(18, 18, 18, 18); root.setSpacing(10)
         root.addWidget(self._muted("금액 ↔ 기능 편집 후 ‘저장’ (정확히 일치하는 금액만 발동)"))
 
-        # 행이 늘어날 수 있으므로 스크롤 영역 안에 티어 테이블
-        self.tiers_host = QWidget()
-        self.tiers_box = QVBoxLayout(self.tiers_host)
-        self.tiers_box.setContentsMargins(0, 0, 6, 0); self.tiers_box.setSpacing(4)
-        self.tiers_box.setAlignment(Qt.AlignTop)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidget(self.tiers_host)
-        root.addWidget(scroll, 1)
+        # 카테고리 전환 버튼 — 선택된 쪽만 초록. 아래 편집 테이블이 통째로 바뀐다.
+        crow = QHBoxLayout(); crow.setSpacing(6)
+        self.cat_btns = {}
+        for key, label in self.CATEGORIES:
+            b = QPushButton(label); b.setObjectName("cat"); b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _checked, k=key: self._set_cat(k))
+            crow.addWidget(b)
+            self.cat_btns[key] = b
+        crow.addStretch(1)
+        root.addLayout(crow)
+
+        # 행이 늘어날 수 있으므로 스크롤 영역 안에 티어 테이블 (카테고리별로 하나씩)
+        self.tiers_stack = QStackedWidget()
+        self.tiers_box = {}
+        for key, _label in self.CATEGORIES:
+            host = QWidget()
+            box = QVBoxLayout(host)
+            box.setContentsMargins(0, 0, 6, 0); box.setSpacing(4)
+            box.setAlignment(Qt.AlignTop)
+            scroll = QScrollArea(); scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setWidget(host)
+            self.tiers_stack.addWidget(scroll)
+            self.tiers_box[key] = box
+        root.addWidget(self.tiers_stack, 1)
+        self._set_cat(self.cat)
 
         trow = QHBoxLayout()
         self.add_btn = QPushButton("+ 행 추가"); self.add_btn.setObjectName("link")
@@ -1378,6 +1423,23 @@ class RewardPresetDialog(QDialog):
     def _muted(self, t):
         l = QLabel(t); l.setObjectName("muted"); return l
 
+    # --- 카테고리 ---
+    def _set_cat(self, key):
+        self.cat = key
+        for i, (k, _label) in enumerate(self.CATEGORIES):
+            self.cat_btns[k].setChecked(k == key)
+            if k == key:
+                self.tiers_stack.setCurrentIndex(i)
+
+    def _iter_rows(self):
+        """모든 카테고리의 행을 (cat, row_tuple) 로 순회."""
+        for key, _label in self.CATEGORIES:
+            for r in self.rows[key]:
+                yield key, r
+
+    def _row_count(self):
+        return sum(len(v) for v in self.rows.values())
+
     def _status_msg(self, text, ok):
         self.status.setText(text)
         self.status.setStyleSheet("color:#5dcaa5;" if ok else "color:#e24b4a;")
@@ -1391,7 +1453,7 @@ class RewardPresetDialog(QDialog):
            편집중: 행추가 / 불러오기·초기화·저장·닫기
            저장후: (행추가 숨김) / 내보내기·초기화·다시 편집·확인"""
         self.locked = locked
-        for _row, amt_edit, feat_combo, del_btn in self.rows:
+        for _cat, (_row, amt_edit, feat_combo, del_btn) in self._iter_rows():
             amt_edit.setEnabled(not locked)
             feat_combo.setEnabled(not locked)
             feat_combo.setStyleSheet(self.LOCKED_COMBO_QSS if locked else "")
@@ -1421,12 +1483,13 @@ class RewardPresetDialog(QDialog):
 
     # --- 행 관리 ---
     def _clear_rows(self):
-        for row, _amt, _feat, _del in self.rows:
-            self.tiers_box.removeWidget(row); row.deleteLater()
-        self.rows = []
+        for cat, (row, _amt, _feat, _del) in self._iter_rows():
+            self.tiers_box[cat].removeWidget(row); row.deleteLater()
+        self.rows = {key: [] for key, _ in self.CATEGORIES}
 
     def _load_rows(self, tiers):
-        """{amount: featureId} -> 편집 테이블 재구성 (금액 오름차순). featureId 미등록 항목은 스킵."""
+        """{amount: featureId} -> 편집 테이블 재구성 (금액 오름차순). featureId 미등록 항목은 스킵.
+           행이 들어갈 카테고리는 featureId 로 결정된다."""
         self._clear_rows()
         items = []
         for k, v in tiers.items():
@@ -1437,45 +1500,50 @@ class RewardPresetDialog(QDialog):
             if amt > 0 and v in ZomboidAdapter.FEATURES:
                 items.append((amt, v))
         for amt, fid in sorted(items):
-            self._add_row(amt, fid)
+            self._add_row(amt, fid, cat=ZomboidAdapter.feature_category(fid))
 
-    def _add_row(self, amount=None, feature_id=None):
+    def _add_row(self, amount=None, feature_id=None, cat=None):
+        cat = cat or self.cat
         row = QWidget()
         h = QHBoxLayout(row); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(6)
         amt_edit = QLineEdit("" if amount is None else str(amount))
         amt_edit.setPlaceholderText("금액")
         amt_edit.setFixedWidth(90)
         feat_combo = QComboBox()
+        # 콤보에는 해당 카테고리의 기능만 — 서버후원 탭에서 개인후원 기능을 고를 수 없다.
         for fid, label in ZomboidAdapter.FEATURES.items():
-            feat_combo.addItem(label, fid)
+            if ZomboidAdapter.feature_category(fid) == cat:
+                feat_combo.addItem(label, fid)
         if feature_id:
             idx = feat_combo.findData(feature_id)
             if idx >= 0:
                 feat_combo.setCurrentIndex(idx)
         del_btn = QPushButton("✕"); del_btn.setObjectName("link"); del_btn.setFixedWidth(28)
-        del_btn.clicked.connect(lambda: self._remove_row(row))
+        del_btn.clicked.connect(lambda: self._remove_row(cat, row))
         if self.locked:
             amt_edit.setEnabled(False)
             feat_combo.setEnabled(False)
             feat_combo.setStyleSheet(self.LOCKED_COMBO_QSS)
             del_btn.hide()
         h.addWidget(amt_edit); h.addWidget(feat_combo, 1); h.addWidget(del_btn)
-        self.tiers_box.addWidget(row)
-        self.rows.append((row, amt_edit, feat_combo, del_btn))
+        self.tiers_box[cat].addWidget(row)
+        self.rows[cat].append((row, amt_edit, feat_combo, del_btn))
 
-    def _remove_row(self, row):
-        for i, (w, _amt, _feat, _del) in enumerate(self.rows):
+    def _remove_row(self, cat, row):
+        for i, (w, _amt, _feat, _del) in enumerate(self.rows[cat]):
             if w is row:
-                self.rows.pop(i)
+                self.rows[cat].pop(i)
                 break
-        self.tiers_box.removeWidget(row)
+        self.tiers_box[cat].removeWidget(row)
         row.deleteLater()
 
     # --- 저장 / 불러오기 / 초기화 ---
     def _collect(self):
         """편집 테이블 -> {amount: featureId}. 문제 있으면 status 표시 후 None."""
         tiers = {}
-        for _row, amt_edit, feat_combo, _del in self.rows:
+        # 금액은 카테고리를 넘어 전역 유일해야 한다 — 후원 1건은 기능 1개만 발동시킬 수 있으므로
+        # 개인후원 10만 / 서버후원 10만이 동시에 존재하면 어느 쪽인지 결정할 수 없다.
+        for cat, (_row, amt_edit, feat_combo, _del) in self._iter_rows():
             txt = amt_edit.text().strip().replace(",", "")
             if not txt:
                 continue
@@ -1486,7 +1554,10 @@ class RewardPresetDialog(QDialog):
             if amt <= 0:
                 self._status_msg(f"⚠ 금액은 1 이상이어야 함: {amt}", ok=False); return None
             if amt in tiers:
-                self._status_msg(f"⚠ 금액 중복: {amt:,}", ok=False); return None
+                self._status_msg(f"⚠ 금액 중복: {amt:,} (개인/서버후원 통틀어 유일해야 함)",
+                                 ok=False)
+                self._set_cat(cat)
+                return None
             tiers[amt] = feat_combo.currentData()
         if not tiers:
             self._status_msg("⚠ 저장할 티어가 없음 — 최소 1개 필요", ok=False); return None
@@ -1535,12 +1606,12 @@ class RewardPresetDialog(QDialog):
             self._status_msg("⚠ 형식이 올바르지 않음 ({amount: featureId} JSON)", ok=False)
             return
         self._load_rows(raw)
-        if not self.rows:
+        if not self._row_count():
             # 전부 무효 — 이전 테이블은 이미 날아갔으므로 기본 티어로 복구
             self._load_rows(ZomboidAdapter.DEFAULT_REWARD_TIERS)
             self._status_msg("⚠ 유효한 티어가 없음 (featureId 불일치)", ok=False)
             return
-        self._status_msg(f"불러옴 ({len(self.rows)}개) — ‘저장’을 눌러야 적용됨", ok=True)
+        self._status_msg(f"불러옴 ({self._row_count()}개) — ‘저장’을 눌러야 적용됨", ok=True)
 
     def _reset(self):
         box = QMessageBox(self)
@@ -1565,8 +1636,8 @@ class MainWindow(QWidget):
         ico = resource_path(ICON_FILE)
         if os.path.exists(ico):
             self.setWindowIcon(QIcon(ico))
-        self.resize(620, 980)
-        self.setFixedSize(620, 980)
+        self.resize(620, 1040)
+        self.setFixedSize(620, 1040)
         self.adapter = ZomboidAdapter()
         self.worker = None
         self.cfg = load_config()
@@ -1628,7 +1699,7 @@ class MainWindow(QWidget):
         tscroll.setFrameShape(QFrame.NoFrame)
         tscroll.setWidget(self.tiers_host)
         tscroll.setToolTip("리워드 프리셋을 수정하려면 ‘중지’ 버튼을 눌러 이전 화면으로 돌아가 주세요")
-        tscroll.setFixedHeight(380)
+        tscroll.setFixedHeight(575)
         root.addWidget(tscroll)
         self._render_tier_display()
 
@@ -1659,22 +1730,35 @@ class MainWindow(QWidget):
         f = QFrame(); f.setObjectName("sep"); f.setFixedHeight(1); return f
 
     def _render_tier_display(self):
-        """adapter.reward_tiers -> 읽기 전용 2열 라벨 그리드 (금액 오름차순)."""
+        """adapter.reward_tiers -> 읽기 전용 2열 라벨 그리드 (금액 오름차순).
+           왼쪽 칼럼 = 개인후원, 오른쪽 칼럼 = 서버후원. 칼럼 순서는 CATEGORIES 정의 순."""
         while self.tiers_grid.count():
             item = self.tiers_grid.takeAt(0)
             w = item.widget()
             if w:
                 w.deleteLater()
-        for i, (amt, fid) in enumerate(sorted(self.adapter.reward_tiers.items())):
-            label = self.adapter.FEATURES.get(fid, fid)
-            l = QLabel(f"{amt:,} — {label}")
-            l.setObjectName("tier")
-            self.tiers_grid.addWidget(l, i // 2, i % 2)
+        for col, (cat, cat_label) in enumerate(RewardPresetDialog.CATEGORIES):
+            head = QLabel(cat_label); head.setObjectName("catsect")
+            self.tiers_grid.addWidget(head, 0, col)
+            items = sorted((amt, fid) for amt, fid in self.adapter.reward_tiers.items()
+                           if self.adapter.feature_category(fid) == cat)
+            for i, (amt, fid) in enumerate(items):
+                label = self.adapter.FEATURES.get(fid, fid)
+                l = QLabel(f"{amt:,} — {label}")
+                l.setObjectName("tier")
+                self.tiers_grid.addWidget(l, i + 1, col)
+            # 항목 수가 다른 쪽 칼럼이 세로로 늘어나지 않도록 남는 공간을 아래로 밀어둔다
+            self.tiers_grid.setColumnStretch(col, 1)
+        self.tiers_grid.setRowStretch(self.tiers_grid.rowCount(), 1)
 
     def _build_test_combo(self):
+        """테스트 후원 목록. 카테고리 구분은 라벨 접미사로만 (콤보에 그룹 헤더를 넣으면
+           선택 불가 더미 항목이 생겨 currentData() 로직에 방어 코드가 붙는다)."""
         self.test_combo.clear()
         for amt, fid in sorted(self.adapter.reward_tiers.items()):
             label = self.adapter.FEATURES.get(fid, fid)
+            if self.adapter.feature_category(fid) == "server":
+                label += "  (서버)"
             self.test_combo.addItem(f"{amt:,} — {label}", amt)
 
     # --- 설정 복원/저장 ---
