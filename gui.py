@@ -70,7 +70,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v4.5.0"
+VERSION = "v5.0.1"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -94,8 +94,9 @@ LOGIN_TIMEOUT       = 300.0   # 브라우저 로그인 대기 한도 (초)
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 # config.json 의 force_online=true 로 켜지는 관리자/테스트 모드.
-# 게이트 체크리스트 3종(방송 중 / PZ 실행 / 인게임 접속)을 전부 통과시킨다.
+# 게이트 체크리스트(방송 중 / 인게임 접속)를 전부 통과시킨다.
 # 연동 중 감시(MainGuard)도 같은 헬퍼를 쓰므로 PZ 없이도 게이트로 안 튕긴다.
+# 여기선 선언만 하고, 실제 값은 load_config() 정의 직후 아래에서 채운다.
 FORCE_ONLINE = False
 
 # ── 로컬 설정 (게임 유저 폴더 ~/Zomboid 안에 저장 -> rewards.txt 옆이라 찾기 쉬움) ──
@@ -126,21 +127,55 @@ def find_zomboid_dir() -> Path:
                 pass
     return cands[0]   # 못 찾으면 home/Zomboid (게임 실행 전이라 폴더가 아직 없을 수 있음)
 
-CONFIG_DIR = find_zomboid_dir()
-CONFIG_PATH = CONFIG_DIR / "chzzk_donation_config.json"
+CONFIG_NAME = "chzzk_donation_config.json"
+CONFIG_DIR  = find_zomboid_dir()
+CONFIG_PATH = CONFIG_DIR / CONFIG_NAME
 
-def load_config() -> dict:
+def _read_json(p: Path) -> dict:
     try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        d = json.loads(p.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
     except Exception:
         return {}
 
+def _alt_config_path(cfg: dict):
+    """수동 지정된 Zomboid 폴더(zomboid_dir) 안의 설정 파일. 없으면 None.
+       자동탐지 폴더와 실제 사용 폴더가 다를 때(예: ~/Zomboid 와 ~/'Zomboid (b41)'),
+       사용자는 UI에 보이는 폴더의 설정 파일을 직접 편집하기 마련이라 그쪽도 봐야 한다."""
+    alt = cfg.get("zomboid_dir", "")
+    if not alt:
+        return None
+    p = Path(alt) / CONFIG_NAME
+    if p == CONFIG_PATH or not p.exists():
+        return None
+    return p
+
+def load_config() -> dict:
+    """자동탐지 폴더의 설정을 기본값으로 읽고, 수동 지정 폴더에 설정 파일이 따로 있으면
+       그 값으로 덮어쓴다 (수동 지정 폴더 우선)."""
+    cfg = _read_json(CONFIG_PATH)
+    alt = _alt_config_path(cfg)
+    if alt is not None:
+        cfg.update(_read_json(alt))
+    return cfg
+
 def save_config(d: dict):
-    try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError:
-        pass
+    """읽을 때 수동 지정 폴더 파일이 우선이므로, 저장은 존재하는 두 파일에 모두 한다.
+       (한쪽만 갱신하면 오래된 값이 계속 새 값을 덮어써 버린다.)"""
+    targets = [CONFIG_PATH]
+    alt = _alt_config_path(d)
+    if alt is not None:
+        targets.append(alt)
+    for p in targets:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+# 관리자/테스트 모드는 실행 시점에 1회 반영한다. (로그인 경로를 안 타고 게이트로
+# 되돌아오는 흐름에서도 항상 적용되도록 _gate_pass 갱신에만 의존하지 않는다.)
+FORCE_ONLINE = bool(load_config().get("force_online"))
 
 
 # ── Zomboid 폴더 (자동탐지 or 수동지정) ─────────────────────────────────────
@@ -1722,7 +1757,6 @@ class LauncherCore(QObject):
     invalid  = pyqtSignal()           # 화이트리스트 미등재
     login_needed = pyqtSignal(str)    # 자동 로그인 실패/취소 → 로그인 버튼 표시 (detail=사유, 빈 문자열 가능)
     live     = pyqtSignal(bool)       # 방송 on/off
-    pz       = pyqtSignal(bool)       # PZ 실행 여부
     connected = pyqtSignal(bool)      # PZ 연결 상태
     tiers    = pyqtSignal(bool)       # 서버 리워드 티어(pongdu_tiers.txt) 확인 여부
 
@@ -1821,11 +1855,8 @@ class LauncherCore(QObject):
         while self._polling:
             live = await fetch_live(self._uuid)
             self.live.emit(live)
-            try:
-                running = await self.loop.run_in_executor(None, pz_running)
-            except Exception:
-                running = False
-            self.pz.emit(running)
+            # PZ 실행 여부는 따로 확인하지 않는다 — 인게임 접속(pz_status.txt heartbeat)이
+            # 확인되면 프로세스는 당연히 떠 있으므로, 3초마다 도는 tasklist 조회만 낭비였다.
             try:
                 connected = await self.loop.run_in_executor(None, pz_connected)
             except Exception:
@@ -1934,11 +1965,10 @@ class LauncherWindow(QWidget):
         self.core.invalid.connect(self._on_invalid)
         self.core.login_needed.connect(self._on_login_needed)
         self.core.live.connect(self._on_live)
-        self.core.pz.connect(self._on_pz)
         self.core.connected.connect(self._on_connected)
         self.core.tiers.connect(self._on_tiers)
         self._uuid = ""; self._name = ""
-        self._live = False; self._pz = False; self._connected = False; self._tier = False
+        self._live = False; self._connected = False; self._tier = False
         self._logging_in = False
         self.main_win = None
         self.cfg = load_config()       # opt_mode 등 (MainWindow와 같은 config.json 공유)
@@ -2024,7 +2054,6 @@ class LauncherWindow(QWidget):
         v.addSpacing(4)
         self.r_uuid = self._check_row(); v.addWidget(self.r_uuid[0])
         self.r_live = self._check_row(); v.addWidget(self.r_live[0])
-        self.r_pz   = self._check_row(); v.addWidget(self.r_pz[0])
         self.r_conn = self._check_row(); v.addWidget(self.r_conn[0])
         self.r_tier = self._check_row(); v.addWidget(self.r_tier[0])
         v.addSpacing(6)
@@ -2032,7 +2061,9 @@ class LauncherWindow(QWidget):
         zrow = QHBoxLayout()
         zrow.addWidget(self._muted("Zomboid 폴더"))
         self.zdir_input = QLineEdit(str(get_zomboid_dir())); self.zdir_input.setReadOnly(True)
+        self.zdir_input.setMinimumWidth(300); self.zdir_input.setMaximumWidth(330)
         zrow.addWidget(self.zdir_input, 1)
+        zrow.addStretch(1)
         zdir_btn = QPushButton("폴더 선택"); zdir_btn.setObjectName("link")
         zdir_btn.clicked.connect(self._choose_zomboid_dir)
         zrow.addWidget(zdir_btn)
@@ -2194,10 +2225,9 @@ class LauncherWindow(QWidget):
         self.login_cancel_btn.hide()
         self.login_status.setText("")
         self.welcome.setText(f"<span style='color:#5dcaa5; font-size:26px; font-weight:900'>[ {self._name} ]</span> 님, 환영합니다")
-        self._live = False; self._pz = False; self._connected = False; self._tier = False
+        self._live = False; self._connected = False; self._tier = False
         self._set_row(self.r_uuid, True,  "치지직 로그인 완료")
         self._set_row(self.r_live, False, "방송 상태 확인 중…")
-        self._set_row(self.r_pz,   False, "Project Zomboid 확인 중…")
         self._set_row(self.r_conn, False, "인게임 접속 확인 중…")
         self._set_row(self.r_tier, False, "서버 리워드 설정 확인 중…")
         self.connect_btn.setEnabled(False)
@@ -2219,18 +2249,14 @@ class LauncherWindow(QWidget):
         self.core.stop_poll()
         _clear_refresh_token()
         self._uuid = ""; self._name = ""
-        self._live = False; self._pz = False; self._connected = False; self._tier = False
+        self._live = False; self._connected = False; self._tier = False
         self._on_login_needed("")
 
     def _on_live(self, live):
         self._live = live
-        self._set_row(self.r_live, live, "방송 중" if live else "방송이 오프라인 상태입니다")
-        self._refresh()
-
-    def _on_pz(self, running):
-        self._pz = running
-        self._set_row(self.r_pz, running,
-                      "Project Zomboid 실행 중" if running else "Project Zomboid가 실행중이 아닙니다")
+        self._set_row(self.r_live, live,
+                      ("방송 중 (강제 온라인)" if FORCE_ONLINE else "방송 중") if live
+                      else "방송이 오프라인 상태입니다")
         self._refresh()
 
     def _on_connected(self, conn):
@@ -2254,7 +2280,7 @@ class LauncherWindow(QWidget):
         self._refresh()
 
     def _refresh(self):
-        self.connect_btn.setEnabled(self._live and self._pz and self._connected and self._tier)
+        self.connect_btn.setEnabled(self._live and self._connected and self._tier)
 
     def _go_main(self):
         self.core.stop_poll()
