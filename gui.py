@@ -70,7 +70,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v4.3.1"
+VERSION = "v4.5.0"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -143,7 +143,39 @@ def save_config(d: dict):
         pass
 
 
-# ── 리워드 프리셋 (Zomboid 폴더의 독립 json — 있으면 이걸 쓰고, 없으면 코드 기본값) ──
+# ── Zomboid 폴더 (자동탐지 or 수동지정) ─────────────────────────────────────
+# pz_status.txt / pongdu_tiers.txt / rewards.txt 는 전부 같은 폴더
+# (<Zomboid>/Lua/) 아래에 있다. 예전엔 이 셋을 각자 따로 후보 경로 순회로
+# 찾았는데, 자동탐지가 틀리면(별도 드라이브 세이브, 특이한 OneDrive 리다이렉트
+# 등) 셋 다 동시에 어긋난다. 이제 폴더 하나만 수동으로 바로잡으면 셋 다
+# 한 번에 해결되도록, 이 폴더 하나에서 상대경로로 파생시킨다.
+# CONFIG_DIR(설정 저장 위치) 자체는 자동탐지 실패해도 "쓸 수만 있으면" 되므로
+# 그대로 두고, 파일 탐색용 폴더만 별도로 override 가능하게 분리한다.
+
+def get_zomboid_dir() -> Path:
+    """설정에 수동 지정된 폴더가 있으면 그걸, 없으면 자동탐지 결과(CONFIG_DIR)를 쓴다."""
+    override = load_config().get("zomboid_dir", "")
+    if override:
+        p = Path(override)
+        if p.exists():
+            return p
+    return CONFIG_DIR
+
+def set_zomboid_dir_override(path: Path):
+    cfg = load_config()
+    cfg["zomboid_dir"] = str(path)
+    save_config(cfg)
+
+def zomboid_lua_path(filename: str) -> Path:
+    """<Zomboid 폴더>/Lua/<filename> — pz_status.txt / pongdu_tiers.txt / rewards.txt 공용."""
+    return get_zomboid_dir() / "Lua" / filename
+
+
+# ── 리워드 프리셋 (레거시, 미사용) ──────────────────────────────────────────────
+# 금액↔featureId 매핑 소유권이 모드 샌박(PongDu.Tier_<featureId>)으로 이전되면서
+# 런처에서 이 로컬 파일을 읽거나/쓰는 코드 경로가 전부 사라졌다. 삭제하지 않고 남겨둔
+# 이유는 나중에 "서버 설정이 없을 때 로컬로 폴백"이 필요해질 경우를 대비한 것뿐이다.
+# 현재는 이 세 함수를 호출하는 곳이 없다.
 PRESET_PATH = CONFIG_DIR / "reward_preset.json"
 
 def load_reward_preset() -> dict:
@@ -729,29 +761,7 @@ class ZomboidAdapter(GameAdapter):
         self.reward_tiers = dict(self.DEFAULT_REWARD_TIERS)
 
     def find_path(self):
-        home = Path.home()
-        cands = [
-            home / "Zomboid" / "Lua" / "rewards.txt",
-            Path(os.environ.get("USERPROFILE", home)) / "Zomboid" / "Lua" / "rewards.txt",
-        ]
-        for env in ("OneDrive", "OneDriveConsumer"):
-            od = os.environ.get(env)
-            if od:
-                cands.append(Path(od) / "Zomboid" / "Lua" / "rewards.txt")
-        for c in cands:
-            if c.parent.exists():
-                return c
-        for drive in ("C:", "D:", "E:", "F:"):
-            base = Path(drive + "\\Users")
-            if base.exists():
-                try:
-                    for user in base.iterdir():
-                        p = user / "Zomboid" / "Lua"
-                        if p.exists():
-                            return p / "rewards.txt"
-                except OSError:
-                    pass
-        return cands[0]
+        return zomboid_lua_path("rewards.txt")
 
     @staticmethod
     def _enc(s):
@@ -825,29 +835,50 @@ def pz_connected() -> bool:
     if FORCE_ONLINE:
         return True
     TIMEOUT = 10
-    home = Path.home()
-    cands = [
-        home / "Zomboid" / "Lua" / "pz_status.txt",
-        Path(os.environ.get("USERPROFILE", home)) / "Zomboid" / "Lua" / "pz_status.txt",
-    ]
-    for env in ("OneDrive", "OneDriveConsumer"):
-        od = os.environ.get(env)
-        if od:
-            cands.append(Path(od) / "Zomboid" / "Lua" / "pz_status.txt")
-    for c in cands:
-        if c.exists():
-            try:
-                raw = c.read_text(encoding="utf-8").strip()
-                if not raw.startswith("CONNECTED"):
-                    return False
-                parts = raw.split("|")
-                if len(parts) < 2:
-                    return False
-                ts = float(parts[1])
-                return (time.time() - ts) <= TIMEOUT
-            except Exception:
-                return False
-    return False
+    c = zomboid_lua_path("pz_status.txt")
+    if not c.exists():
+        return False
+    try:
+        raw = c.read_text(encoding="utf-8").strip()
+        if not raw.startswith("CONNECTED"):
+            return False
+        parts = raw.split("|")
+        if len(parts) < 2:
+            return False
+        ts = float(parts[1])
+        return (time.time() - ts) <= TIMEOUT
+    except Exception:
+        return False
+
+
+# ── 서버 리워드 티어 (모드가 Zomboid/Lua/pongdu_tiers.txt 로 게시한 것을 그대로 읽음) ──
+# 매핑을 "계산"하는 게 아니라 모드 샌박(Tier_<featureId>)이 이미 정해준 값을 읽어들이기만
+# 한다. FEATURES 화이트리스트 검증만 방어적으로 거친다 — 판단 로직은 없음.
+
+def load_server_tiers():
+    """pongdu_tiers.txt -> (reward_tiers dict, server_name, ts) | (None, None, None).
+       파일이 없거나 형식이 깨졌으면 None을 반환한다 (연동 차단 판단은 호출부 책임)."""
+    p = zomboid_lua_path("pongdu_tiers.txt")
+    if not p.exists():
+        return None, None, None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None, None, None
+    tiers = data.get("tiers")
+    if not isinstance(tiers, dict) or not tiers:
+        return None, None, None
+    loaded = {}
+    for k, v in tiers.items():
+        try:
+            amt = int(k)
+        except (TypeError, ValueError):
+            continue
+        if amt > 0 and v in ZomboidAdapter.FEATURES:
+            loaded[amt] = v
+    if not loaded:
+        return None, None, None
+    return loaded, data.get("server", ""), data.get("ts")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1330,304 +1361,65 @@ def make_header() -> QWidget:
 
 
 class RewardPresetDialog(QDialog):
-    """리워드 프리셋 편집 창 — 편집·불러오기·초기화·저장을 한 곳에서 처리.
-       저장하면 reward_preset.json 에 기록되고, MainWindow._load_reward_tiers 가 이 파일을 읽는다.
-       카테고리(개인/서버)는 featureId 의 고정 속성(ZomboidAdapter.SERVER_FEATURES)이라
-       화면만 나눠 보여줄 뿐, 저장 형식은 예전 그대로 {amount: featureId} 평면 구조다."""
+    """리워드 프리셋 조회 창 — 더미(읽기 전용). 편집·불러오기·초기화·저장 기능은 삭제됨.
+
+       금액 ↔ featureId 매핑의 소유권이 모드 샌박(Tier_<featureId>)으로 이전되면서,
+       런처에서 이 값을 바꿀 방법 자체가 없어졌다. 여기서는 모드가 접속 시 게시한
+       pongdu_tiers.txt 내용(=LauncherCore.server_tiers)을 그대로 나열만 한다.
+       카테고리(개인/서버) 구분은 화면 표시용일 뿐 데이터에는 영향 없다."""
 
     CATEGORIES = (("personal", "개인후원"), ("server", "서버후원"))
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, tiers=None, server_name=""):
         super().__init__(parent)
-        self.setWindowTitle("리워드 프리셋 편집")
+        self.setWindowTitle("리워드 프리셋 (서버 설정 — 읽기 전용)")
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         ico = resource_path(ICON_FILE)
         if os.path.exists(ico):
             self.setWindowIcon(QIcon(ico))
-        self.setFixedSize(620, 800)
-        # 카테고리별 [(row_widget, amt_edit, feat_combo, del_btn), ...]
-        self.rows = {key: [] for key, _ in self.CATEGORIES}
-        self.cat = self.CATEGORIES[0][0]
-        self.locked = False
+        self.setFixedSize(460, 620)
+        self.tiers = dict(tiers or {})
+        self.server_name = server_name or ""
         self._build()
         self.setStyleSheet(DARK_QSS)
-        # 저장된 프리셋이 있으면 그걸 잠금 상태로, 없으면 기본 티어를 편집 상태로 (3.5 잠금 동작 유지)
-        saved = load_reward_preset()
-        self._load_rows(saved if saved else ZomboidAdapter.DEFAULT_REWARD_TIERS)
-        self._set_locked(bool(saved))
-        if saved:
-            self._status_msg(f"프리셋 적용됨 ({self._row_count()}개) — ‘다시 편집’으로 잠금 해제", ok=True)
-
-    # --- 빌드 ---
-    def _build(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18); root.setSpacing(10)
-        root.addWidget(self._muted("금액 ↔ 기능 편집 후 ‘저장’ (정확히 일치하는 금액만 발동)"))
-
-        # 카테고리 전환 버튼 — 선택된 쪽만 초록. 아래 편집 테이블이 통째로 바뀐다.
-        crow = QHBoxLayout(); crow.setSpacing(6)
-        self.cat_btns = {}
-        for key, label in self.CATEGORIES:
-            b = QPushButton(label); b.setObjectName("cat"); b.setCheckable(True)
-            b.setCursor(Qt.PointingHandCursor)
-            b.clicked.connect(lambda _checked, k=key: self._set_cat(k))
-            crow.addWidget(b)
-            self.cat_btns[key] = b
-        crow.addStretch(1)
-        root.addLayout(crow)
-
-        # 행이 늘어날 수 있으므로 스크롤 영역 안에 티어 테이블 (카테고리별로 하나씩)
-        self.tiers_stack = QStackedWidget()
-        self.tiers_box = {}
-        for key, _label in self.CATEGORIES:
-            host = QWidget()
-            box = QVBoxLayout(host)
-            box.setContentsMargins(0, 0, 6, 0); box.setSpacing(4)
-            box.setAlignment(Qt.AlignTop)
-            scroll = QScrollArea(); scroll.setWidgetResizable(True)
-            scroll.setFrameShape(QFrame.NoFrame)
-            scroll.setWidget(host)
-            self.tiers_stack.addWidget(scroll)
-            self.tiers_box[key] = box
-        root.addWidget(self.tiers_stack, 1)
-        self._set_cat(self.cat)
-
-        trow = QHBoxLayout()
-        self.add_btn = QPushButton("+ 행 추가"); self.add_btn.setObjectName("link")
-        self.add_btn.clicked.connect(lambda: self._add_row())
-        trow.addWidget(self.add_btn)
-        trow.addStretch(1)
-        # 불러오기(편집중) ↔ 내보내기(저장후) 겸용 버튼
-        self.io_btn = QPushButton("불러오기"); self.io_btn.setObjectName("link")
-        self.io_btn.clicked.connect(self._on_io)
-        trow.addWidget(self.io_btn)
-        self.reset_btn = QPushButton("초기화"); self.reset_btn.setObjectName("link")
-        self.reset_btn.clicked.connect(self._reset)
-        trow.addWidget(self.reset_btn)
-        root.addLayout(trow)
-
-        sep = QFrame(); sep.setObjectName("sep"); sep.setFixedHeight(1)
-        root.addWidget(sep)
-
-        brow = QHBoxLayout()
-        self.status = QLabel(""); self.status.setObjectName("muted")
-        brow.addWidget(self.status, 1)
-        # 저장(편집중) ↔ 다시 편집(저장후) 겸용 버튼
-        self.save_btn = QPushButton("저장"); self.save_btn.setObjectName("start")
-        self.save_btn.clicked.connect(self._on_primary)
-        brow.addWidget(self.save_btn)
-        # 닫기(편집중) ↔ 확인(저장후) — 둘 다 accept, 텍스트만 다름
-        self.close_btn = QPushButton("닫기")
-        self.close_btn.clicked.connect(self.accept)
-        brow.addWidget(self.close_btn)
-        root.addLayout(brow)
 
     def _muted(self, t):
         l = QLabel(t); l.setObjectName("muted"); return l
 
-    # --- 카테고리 ---
-    def _set_cat(self, key):
-        self.cat = key
-        for i, (k, _label) in enumerate(self.CATEGORIES):
-            self.cat_btns[k].setChecked(k == key)
-            if k == key:
-                self.tiers_stack.setCurrentIndex(i)
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18); root.setSpacing(10)
+        hint = "이 서버의 금액↔기능 매핑입니다. 값은 서버장이 퐁듀 모드 샌드박스 설정에서" \
+               " 지정하며, 런처에서는 편집할 수 없습니다."
+        root.addWidget(self._muted(hint))
+        if self.server_name:
+            root.addWidget(self._muted(f"서버: {self.server_name}"))
 
-    def _iter_rows(self):
-        """모든 카테고리의 행을 (cat, row_tuple) 로 순회."""
-        for key, _label in self.CATEGORIES:
-            for r in self.rows[key]:
-                yield key, r
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(6); grid.setVerticalSpacing(4)
+        host = QWidget(); host.setLayout(grid)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(host)
+        root.addWidget(scroll, 1)
 
-    def _row_count(self):
-        return sum(len(v) for v in self.rows.values())
+        for col, (cat, cat_label) in enumerate(self.CATEGORIES):
+            head = QLabel(cat_label); head.setObjectName("catsect")
+            grid.addWidget(head, 0, col)
+            items = sorted((amt, fid) for amt, fid in self.tiers.items()
+                           if ZomboidAdapter.feature_category(fid) == cat)
+            for i, (amt, fid) in enumerate(items):
+                label = ZomboidAdapter.FEATURES.get(fid, fid)
+                l = QLabel(f"{amt:,} — {label}")
+                l.setObjectName("tier")
+                grid.addWidget(l, i + 1, col)
+            grid.setColumnStretch(col, 1)
+        if not self.tiers:
+            grid.addWidget(self._muted("확인된 서버 설정이 없습니다."), 0, 0, 1, 2)
+        grid.setRowStretch(grid.rowCount(), 1)
 
-    def _status_msg(self, text, ok):
-        self.status.setText(text)
-        self.status.setStyleSheet("color:#5dcaa5;" if ok else "color:#e24b4a;")
-
-    # 잠금 상태 콤보박스: 드롭다운 화살표까지 완전히 안 보이게 (조작 여지 자체를 시각적으로 제거)
-    LOCKED_COMBO_QSS = ("QComboBox::drop-down { width:0px; border:none; }"
-                         "QComboBox::down-arrow { width:0px; height:0px; image:none; }")
-
-    def _set_locked(self, locked):
-        """저장 후 잠금 / ‘다시 편집’으로 해제 (3.5 잠금 UX). 행 위젯·버튼 표시/텍스트를 일괄 전환.
-           편집중: 행추가 / 불러오기·초기화·저장·닫기
-           저장후: (행추가 숨김) / 내보내기·초기화·다시 편집·확인"""
-        self.locked = locked
-        for _cat, (_row, amt_edit, feat_combo, del_btn) in self._iter_rows():
-            amt_edit.setEnabled(not locked)
-            feat_combo.setEnabled(not locked)
-            feat_combo.setStyleSheet(self.LOCKED_COMBO_QSS if locked else "")
-            del_btn.setVisible(not locked)
-        self.add_btn.setVisible(not locked)
-        self.io_btn.setText("내보내기" if locked else "불러오기")
-        self.save_btn.setText("다시 편집" if locked else "저장")
-        self.close_btn.setText("확인" if locked else "닫기")
-
-    def _on_io(self):
-        """겸용 버튼: 편집중이면 불러오기, 저장후면 내보내기."""
-        if self.locked:
-            self._export()
-        else:
-            self._import()
-
-    def _on_primary(self):
-        """겸용 버튼: 편집중이면 저장, 저장후면 다시 편집."""
-        if self.locked:
-            self._unlock()
-        else:
-            self._save()
-
-    def _unlock(self):
-        self._set_locked(False)
-        self._status_msg("편집 모드 — 수정 후 ‘저장’", ok=True)
-
-    # --- 행 관리 ---
-    def _clear_rows(self):
-        for cat, (row, _amt, _feat, _del) in self._iter_rows():
-            self.tiers_box[cat].removeWidget(row); row.deleteLater()
-        self.rows = {key: [] for key, _ in self.CATEGORIES}
-
-    def _load_rows(self, tiers):
-        """{amount: featureId} -> 편집 테이블 재구성 (금액 오름차순). featureId 미등록 항목은 스킵.
-           행이 들어갈 카테고리는 featureId 로 결정된다."""
-        self._clear_rows()
-        items = []
-        for k, v in tiers.items():
-            try:
-                amt = int(k)
-            except (TypeError, ValueError):
-                continue
-            if amt > 0 and v in ZomboidAdapter.FEATURES:
-                items.append((amt, v))
-        for amt, fid in sorted(items):
-            self._add_row(amt, fid, cat=ZomboidAdapter.feature_category(fid))
-
-    def _add_row(self, amount=None, feature_id=None, cat=None):
-        cat = cat or self.cat
-        row = QWidget()
-        h = QHBoxLayout(row); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(6)
-        amt_edit = QLineEdit("" if amount is None else str(amount))
-        amt_edit.setPlaceholderText("금액")
-        amt_edit.setFixedWidth(90)
-        feat_combo = QComboBox()
-        # 콤보에는 해당 카테고리의 기능만 — 서버후원 탭에서 개인후원 기능을 고를 수 없다.
-        for fid, label in ZomboidAdapter.FEATURES.items():
-            if ZomboidAdapter.feature_category(fid) == cat:
-                feat_combo.addItem(label, fid)
-        if feature_id:
-            idx = feat_combo.findData(feature_id)
-            if idx >= 0:
-                feat_combo.setCurrentIndex(idx)
-        del_btn = QPushButton("✕"); del_btn.setObjectName("link"); del_btn.setFixedWidth(28)
-        del_btn.clicked.connect(lambda: self._remove_row(cat, row))
-        if self.locked:
-            amt_edit.setEnabled(False)
-            feat_combo.setEnabled(False)
-            feat_combo.setStyleSheet(self.LOCKED_COMBO_QSS)
-            del_btn.hide()
-        h.addWidget(amt_edit); h.addWidget(feat_combo, 1); h.addWidget(del_btn)
-        self.tiers_box[cat].addWidget(row)
-        self.rows[cat].append((row, amt_edit, feat_combo, del_btn))
-
-    def _remove_row(self, cat, row):
-        for i, (w, _amt, _feat, _del) in enumerate(self.rows[cat]):
-            if w is row:
-                self.rows[cat].pop(i)
-                break
-        self.tiers_box[cat].removeWidget(row)
-        row.deleteLater()
-
-    # --- 저장 / 불러오기 / 초기화 ---
-    def _collect(self):
-        """편집 테이블 -> {amount: featureId}. 문제 있으면 status 표시 후 None."""
-        tiers = {}
-        # 금액은 카테고리를 넘어 전역 유일해야 한다 — 후원 1건은 기능 1개만 발동시킬 수 있으므로
-        # 개인후원 10만 / 서버후원 10만이 동시에 존재하면 어느 쪽인지 결정할 수 없다.
-        for cat, (_row, amt_edit, feat_combo, _del) in self._iter_rows():
-            txt = amt_edit.text().strip().replace(",", "")
-            if not txt:
-                continue
-            try:
-                amt = int(txt)
-            except ValueError:
-                self._status_msg(f"⚠ 잘못된 금액: {txt!r}", ok=False); return None
-            if amt <= 0:
-                self._status_msg(f"⚠ 금액은 1 이상이어야 함: {amt}", ok=False); return None
-            if amt in tiers:
-                self._status_msg(f"⚠ 금액 중복: {amt:,} (개인/서버후원 통틀어 유일해야 함)",
-                                 ok=False)
-                self._set_cat(cat)
-                return None
-            tiers[amt] = feat_combo.currentData()
-        if not tiers:
-            self._status_msg("⚠ 저장할 티어가 없음 — 최소 1개 필요", ok=False); return None
-        return tiers
-
-    def _save(self):
-        tiers = self._collect()
-        if tiers is None:
-            return
-        save_reward_preset(tiers)               # Zomboid 폴더의 reward_preset.json에 기록
-        self._load_rows(tiers)                  # 금액 오름차순으로 재렌더
-        self._set_locked(True)                  # 저장 = 잠금 (‘다시 편집’으로 해제)
-        self._status_msg(f"저장됨 ({len(tiers)}개) — ‘다시 편집’으로 수정 / ‘내보내기’로 파일 저장", ok=True)
-
-    def _export(self):
-        """확정된(잠금 상태) 프리셋을 사용자가 지정한 경로에 JSON({amount: featureId})으로 저장."""
-        tiers = self._collect()
-        if tiers is None:                       # 잠금 상태라 정상적으론 발생 안 하지만 방어적으로
-            return
-        fn, _ = QFileDialog.getSaveFileName(
-            self, "리워드 프리셋 내보내기", str(Path.home() / "reward_preset.json"), "JSON (*.json)")
-        if not fn:
-            return
-        try:
-            Path(fn).write_text(
-                json.dumps({str(k): v for k, v in tiers.items()}, ensure_ascii=False, indent=2),
-                encoding="utf-8")
-        except OSError as e:
-            self._status_msg(f"⚠ 내보내기 실패: {e}", ok=False)
-            return
-        self._status_msg(f"내보냄 ({len(tiers)}개) → {Path(fn).name}", ok=True)
-
-    def _import(self):
-        """리워드 프리셋(JSON, {amount: featureId}) 파일 -> 편집 테이블에 로드.
-           바로 저장하지 않음 — 내용 확인 후 ‘저장’을 눌러야 실제 적용."""
-        fn, _ = QFileDialog.getOpenFileName(
-            self, "리워드 프리셋 불러오기", str(Path.home()), "JSON (*.json)")
-        if not fn:
-            return
-        try:
-            raw = json.loads(Path(fn).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
-            self._status_msg(f"⚠ 불러오기 실패: {e}", ok=False)
-            return
-        if not isinstance(raw, dict) or not raw:
-            self._status_msg("⚠ 형식이 올바르지 않음 ({amount: featureId} JSON)", ok=False)
-            return
-        self._load_rows(raw)
-        if not self._row_count():
-            # 전부 무효 — 이전 테이블은 이미 날아갔으므로 기본 티어로 복구
-            self._load_rows(ZomboidAdapter.DEFAULT_REWARD_TIERS)
-            self._status_msg("⚠ 유효한 티어가 없음 (featureId 불일치)", ok=False)
-            return
-        self._status_msg(f"불러옴 ({self._row_count()}개) — ‘저장’을 눌러야 적용됨", ok=True)
-
-    def _reset(self):
-        box = QMessageBox(self)
-        box.setWindowTitle("리워드 프리셋 초기화")
-        box.setText("저장된 리워드 프리셋을 삭제하고 기본 티어로 되돌립니다.\n계속할까요?")
-        yes_btn = box.addButton("초기화", QMessageBox.DestructiveRole)
-        box.addButton("취소", QMessageBox.RejectRole)
-        box.exec_()
-        if box.clickedButton() is not yes_btn:
-            return
-        reset_reward_preset()                   # reward_preset.json 삭제 -> 기본 티어 사용 상태
-        self._load_rows(ZomboidAdapter.DEFAULT_REWARD_TIERS)
-        self._set_locked(False)                 # 프리셋이 사라졌으니 바로 편집 가능
-        self._status_msg("초기화됨 — 기본 티어 사용", ok=True)
+        close_btn = QPushButton("닫기"); close_btn.clicked.connect(self.accept)
+        root.addWidget(close_btn)
 
 
 class MainWindow(QWidget):
@@ -1645,8 +1437,10 @@ class MainWindow(QWidget):
         self.cfg = load_config()
         self._returning = False                       # 게이트 복귀 중복 방지
         self.guard = None                             # PZ 종료 + 인게임 이탈 감시 (연동 중에만)
-        # 티어 편집은 게이트(RewardPresetDialog)로 이동 — 여기선 reward_preset.json만 읽는다.
+        # 티어 편집 기능은 삭제됨 — 게이트가 이미 pongdu_tiers.txt에서 읽어 검증까지 끝낸
+        # dict를 그대로 넘겨준다. 여기서는 계산도 재검증도 하지 않고 그대로 반영한다.
         self._load_reward_tiers()
+        self.server_name = self.preset.get("server_name", "")
         self._build()
         self._restore()
         if self.preset.get("autostart"):
@@ -1668,15 +1462,10 @@ class MainWindow(QWidget):
         conn.setObjectName("linkok")
         root.addWidget(conn)
 
-        # 경로
+        # 경로 — Zomboid 폴더는 게이트에서 지정. 여기선 그 폴더 기준 고정 경로만 보여준다.
         root.addWidget(self._muted("rewards.txt 경로"))
-        prow = QHBoxLayout()
         self.path_input = QLineEdit(); self.path_input.setReadOnly(True)
-        prow.addWidget(self.path_input, 1)
-        redetect = QPushButton("다시 탐지"); redetect.setObjectName("link"); redetect.clicked.connect(self._autodetect_path)
-        choose = QPushButton("직접 지정"); choose.setObjectName("link"); choose.clicked.connect(self._choose_path)
-        prow.addWidget(redetect); prow.addWidget(choose)
-        root.addLayout(prow)
+        root.addWidget(self.path_input)
 
         # 시작/중지 + 상태
         srow = QHBoxLayout()
@@ -1690,17 +1479,20 @@ class MainWindow(QWidget):
 
         root.addWidget(self._sep())
 
-        # 확정된 리워드 티어 (읽기 전용 — 편집은 게이트의 ‘리워드 프리셋 편집하기’)
-        root.addWidget(self._muted("리워드 티어  —  편집은 게이트의 ‘리워드 프리셋 편집하기’에서"))
+        # 확정된 리워드 티어 (서버 설정 — 읽기 전용, 런처에서는 편집 불가)
+        tier_hint = "리워드 티어  —  서버 설정 (편집 불가)"
+        if self.server_name:
+            tier_hint += f"  ·  {self.server_name}"
+        root.addWidget(self._muted(tier_hint))
         self.tiers_host = QWidget()
-        self.tiers_host.setToolTip("리워드 프리셋을 수정하려면 ‘중지’ 버튼을 눌러 이전 화면으로 돌아가 주세요")
+        self.tiers_host.setToolTip("서버장이 퐁듀 모드 샌드박스 설정에서 지정한 값입니다. 런처에서는 편집할 수 없습니다.")
         self.tiers_grid = QGridLayout(self.tiers_host)
         self.tiers_grid.setContentsMargins(0, 0, 6, 0)
         self.tiers_grid.setHorizontalSpacing(6); self.tiers_grid.setVerticalSpacing(4)
         tscroll = QScrollArea(); tscroll.setWidgetResizable(True)
         tscroll.setFrameShape(QFrame.NoFrame)
         tscroll.setWidget(self.tiers_host)
-        tscroll.setToolTip("리워드 프리셋을 수정하려면 ‘중지’ 버튼을 눌러 이전 화면으로 돌아가 주세요")
+        tscroll.setToolTip("서버장이 퐁듀 모드 샌드박스 설정에서 지정한 값입니다. 런처에서는 편집할 수 없습니다.")
         tscroll.setFixedHeight(575)
         root.addWidget(tscroll)
         self._render_tier_display()
@@ -1765,61 +1557,24 @@ class MainWindow(QWidget):
 
     # --- 설정 복원/저장 ---
     def _load_reward_tiers(self):
-        """Zomboid/reward_preset.json > 코드 기본값 순. (편집은 게이트의 RewardPresetDialog에서)
-           featureId가 FEATURES에 없는 항목/파싱 안 되는 키는 무시(방어적 마이그레이션)."""
-        raw = load_reward_preset()
-        if not isinstance(raw, dict) or not raw:
-            return
-        loaded = {}
-        for k, v in raw.items():
-            try:
-                amt = int(k)
-            except (TypeError, ValueError):
-                continue
-            if amt > 0 and v in self.adapter.FEATURES:
-                loaded[amt] = v
+        """게이트(LauncherCore)가 pongdu_tiers.txt에서 이미 읽고 검증한 dict를 그대로
+           반영한다. 여기서 다시 파싱하거나 판단하지 않는다 — 게이트가 연동 시작을 막지
+           않았다면 이 값은 항상 존재한다."""
+        loaded = self.preset.get("reward_tiers") or {}
         if loaded:
             self.adapter.reward_tiers = loaded
 
     def _restore(self):
-        manual = self.cfg.get("path", "")
-        if manual:
-            self.adapter.path = Path(manual)
-            self.path_input.setText(manual)
-        else:
-            self._autodetect_path()
-
-    def _persist(self):
-        self.cfg.update({
-            "path": str(self.adapter.path) if self.adapter.path else "",
-        })
-        save_config(self.cfg)
+        """rewards.txt 경로는 이제 파일 단위로 수동 지정하지 않는다 — 게이트에서
+           지정한 Zomboid 폴더 하나로부터 항상 같은 상대경로로 고정된다."""
+        p = self.adapter.find_path()
+        self.adapter.path = p
+        self.path_input.setText(str(p))
 
     def closeEvent(self, e):
-        self._persist()
         if self.worker:
             self.worker.stop()
         super().closeEvent(e)
-
-    # --- 경로 ---
-    def _autodetect_path(self):
-        p = self.adapter.find_path()
-        self.adapter.path = p
-        if p:
-            self.path_input.setText(str(p))
-            exists = p.exists()
-            self._log(f"경로 {'탐지' if exists else '예정'}: {p}" + ("" if exists else "  (첫 후원 때 생성됨)"))
-        else:
-            self.path_input.setText("")
-            self._log("rewards.txt 경로를 못 찾음. ‘직접 지정’으로 선택해 주세요.")
-
-    def _choose_path(self):
-        start_dir = str(self.adapter.path.parent) if self.adapter.path else str(Path.home())
-        fn, _ = QFileDialog.getSaveFileName(self, "rewards.txt 위치 선택", start_dir, "Text (*.txt)")
-        if fn:
-            self.adapter.path = Path(fn)
-            self.path_input.setText(fn)
-            self._log(f"경로 수동 지정: {fn}")
 
     # --- 시작/중지 ---
     def _toggle(self):
@@ -1834,8 +1589,7 @@ class MainWindow(QWidget):
 
     def _start(self):
         if self.adapter.path is None:
-            self._log("rewards.txt 경로가 없음. ‘직접 지정’으로 선택해 주세요."); return
-        self._persist()
+            self._log("rewards.txt 경로가 없음. 게이트의 ‘Zomboid 폴더’에서 지정해 주세요."); return
         source = ChzzkOfficialSource(                  # ← 수신 어댑터 (치지직 공식 Open API)
             refresh_token=load_config().get("chzzk_refresh_token", ""),
             on_token=self._save_token)
@@ -1886,7 +1640,6 @@ class MainWindow(QWidget):
         elif warn_wl:
             QMessageBox.warning(self, "시즌 참가 목록 변경",
                                 "채널이 시즌 참가 목록에서 제외되어 연동이 중단됩니다.")
-        self._persist()
         preset = None
         if not (warn_auth or warn_wl) and self.preset.get("uuid"):
             preset = {"uuid": self.preset["uuid"], "name": self.preset.get("name", "")}
@@ -1971,12 +1724,18 @@ class LauncherCore(QObject):
     live     = pyqtSignal(bool)       # 방송 on/off
     pz       = pyqtSignal(bool)       # PZ 실행 여부
     connected = pyqtSignal(bool)      # PZ 연결 상태
+    tiers    = pyqtSignal(bool)       # 서버 리워드 티어(pongdu_tiers.txt) 확인 여부
 
     def __init__(self):
         super().__init__()
         self.loop = None
         self._uuid = None
         self._polling = False
+        # 모드가 접속 시 게시한 서버 티어 — read_server_tiers()가 채우고, 인게임 접속이
+        # 끊기면 비운다. reward_tiers는 여기서 "계산"하는 게 아니라 이 값을 그대로 읽어들인 것.
+        self.server_tiers = None
+        self.server_name = ""
+        self.server_ts = None
         self._ready = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -2072,6 +1831,24 @@ class LauncherCore(QObject):
             except Exception:
                 connected = False
             self.connected.emit(connected)
+
+            # 인게임 접속이 확인된 동안에만 서버 티어를 갱신한다. 접속이 끊기면 캐시를
+            # 비워서, 재접속 전까지는 "확인됨" 상태로 남지 않게 한다 (연동 차단 정책).
+            if connected:
+                try:
+                    tiers, server, ts = await self.loop.run_in_executor(None, load_server_tiers)
+                except Exception:
+                    tiers, server, ts = None, None, None
+                self.server_tiers = tiers
+                self.server_name = server or ""
+                self.server_ts = ts
+                self.tiers.emit(tiers is not None)
+            else:
+                self.server_tiers = None
+                self.server_name = ""
+                self.server_ts = None
+                self.tiers.emit(False)
+
             await asyncio.sleep(3)
 
     def stop_poll(self):
@@ -2159,8 +1936,9 @@ class LauncherWindow(QWidget):
         self.core.live.connect(self._on_live)
         self.core.pz.connect(self._on_pz)
         self.core.connected.connect(self._on_connected)
+        self.core.tiers.connect(self._on_tiers)
         self._uuid = ""; self._name = ""
-        self._live = False; self._pz = False; self._connected = False
+        self._live = False; self._pz = False; self._connected = False; self._tier = False
         self._logging_in = False
         self.main_win = None
         self.cfg = load_config()       # opt_mode 등 (MainWindow와 같은 config.json 공유)
@@ -2248,17 +2026,17 @@ class LauncherWindow(QWidget):
         self.r_live = self._check_row(); v.addWidget(self.r_live[0])
         self.r_pz   = self._check_row(); v.addWidget(self.r_pz[0])
         self.r_conn = self._check_row(); v.addWidget(self.r_conn[0])
+        self.r_tier = self._check_row(); v.addWidget(self.r_tier[0])
         v.addSpacing(6)
 
-        prow = QHBoxLayout(); prow.addStretch(1)
-        self.edit_preset_btn = QPushButton("리워드 프리셋 편집하기"); self.edit_preset_btn.setObjectName("link")
-        self.edit_preset_btn.clicked.connect(self._open_preset_dialog)
-        prow.addWidget(self.edit_preset_btn)
-        self.preset_status = self._muted(""); self.preset_status.setAlignment(Qt.AlignCenter)
-        prow.addWidget(self.preset_status)
-        prow.addStretch(1)
-        v.addLayout(prow)
-        self._refresh_preset_status()
+        zrow = QHBoxLayout()
+        zrow.addWidget(self._muted("Zomboid 폴더"))
+        self.zdir_input = QLineEdit(str(get_zomboid_dir())); self.zdir_input.setReadOnly(True)
+        zrow.addWidget(self.zdir_input, 1)
+        zdir_btn = QPushButton("폴더 선택"); zdir_btn.setObjectName("link")
+        zdir_btn.clicked.connect(self._choose_zomboid_dir)
+        zrow.addWidget(zdir_btn)
+        v.addLayout(zrow)
 
         v.addSpacing(4)
         row = QHBoxLayout(); row.addStretch(1)
@@ -2271,21 +2049,16 @@ class LauncherWindow(QWidget):
         v.addLayout(row); v.addStretch(1)
         return w
 
-    def _refresh_preset_status(self):
-        """저장된 reward_preset.json 유무를 상태 라벨에 표시 (편집창 닫힐 때마다 갱신)."""
-        saved = load_reward_preset() if PRESET_PATH.exists() else None
-        if saved:
-            self.preset_status.setText(f"프리셋 적용됨 ({len(saved)}개)")
-            self.preset_status.setStyleSheet("color:#5dcaa5;")
-        else:
-            self.preset_status.setText("기본 티어 사용")
-            self.preset_status.setStyleSheet("")
-
-    def _open_preset_dialog(self):
-        """리워드 프리셋 편집 창 — 편집·불러오기·초기화·저장을 전부 이 창에서 처리."""
-        dlg = RewardPresetDialog(self)
-        dlg.exec_()
-        self._refresh_preset_status()
+    def _choose_zomboid_dir(self):
+        """Zomboid 폴더를 수동 지정. pz_status.txt/pongdu_tiers.txt/rewards.txt가
+           전부 이 폴더 하위 Lua/에서 상대경로로 파생되므로, 자동탐지가 틀렸을 때
+           여기 하나만 바로잡으면 셋 다 한 번에 해결된다."""
+        start = str(get_zomboid_dir())
+        d = QFileDialog.getExistingDirectory(self, "Zomboid 폴더 선택 (Lua 폴더가 있는 상위 폴더)", start)
+        if not d:
+            return
+        set_zomboid_dir_override(Path(d))
+        self.zdir_input.setText(d)
 
     def _check_row(self):
         w = QWidget(); l = QHBoxLayout(w); l.setContentsMargins(120, 0, 0, 0); l.setSpacing(10)
@@ -2421,11 +2194,12 @@ class LauncherWindow(QWidget):
         self.login_cancel_btn.hide()
         self.login_status.setText("")
         self.welcome.setText(f"<span style='color:#5dcaa5; font-size:26px; font-weight:900'>[ {self._name} ]</span> 님, 환영합니다")
-        self._live = False; self._pz = False; self._connected = False
+        self._live = False; self._pz = False; self._connected = False; self._tier = False
         self._set_row(self.r_uuid, True,  "치지직 로그인 완료")
         self._set_row(self.r_live, False, "방송 상태 확인 중…")
         self._set_row(self.r_pz,   False, "Project Zomboid 확인 중…")
         self._set_row(self.r_conn, False, "인게임 접속 확인 중…")
+        self._set_row(self.r_tier, False, "서버 리워드 설정 확인 중…")
         self.connect_btn.setEnabled(False)
         self.stack.setCurrentIndex(2)
         self.core.start_poll(uuid)
@@ -2445,7 +2219,7 @@ class LauncherWindow(QWidget):
         self.core.stop_poll()
         _clear_refresh_token()
         self._uuid = ""; self._name = ""
-        self._live = False; self._pz = False; self._connected = False
+        self._live = False; self._pz = False; self._connected = False; self._tier = False
         self._on_login_needed("")
 
     def _on_live(self, live):
@@ -2463,14 +2237,35 @@ class LauncherWindow(QWidget):
         self._connected = conn
         self._set_row(self.r_conn, conn,
                       "인게임 접속 완료" if conn else "인게임에 접속되지 않았습니다")
+        if not conn:
+            # 접속이 끊기면 티어 상태도 즉시 미확인으로 되돌린다 (core가 같은 타이밍에
+            # server_tiers를 비우므로 여기서도 동일하게 반영해 화면이 어긋나지 않게 한다).
+            self._set_row(self.r_tier, False, "인게임 접속 후 확인됩니다")
+        self._refresh()
+
+    def _on_tiers(self, ok):
+        self._tier = ok
+        if ok:
+            n = len(self.core.server_tiers or {})
+            self._set_row(self.r_tier, True, f"서버 리워드 설정 확인됨 ({n}개)")
+        else:
+            self._set_row(self.r_tier, False,
+                          "서버 리워드 설정을 찾을 수 없습니다 (모드 버전 확인 필요)")
         self._refresh()
 
     def _refresh(self):
-        self.connect_btn.setEnabled(self._live and self._pz and self._connected)
+        self.connect_btn.setEnabled(self._live and self._pz and self._connected and self._tier)
 
     def _go_main(self):
         self.core.stop_poll()
-        preset = {"uuid": self._uuid, "name": self._name, "autostart": True}
+        preset = {
+            "uuid": self._uuid, "name": self._name, "autostart": True,
+            # 매핑을 여기서 계산하지 않는다 — core가 pongdu_tiers.txt에서 읽어들인
+            # 값을 그대로 넘긴다. 연동 시작 버튼은 이 값이 있어야만 눌리므로 None일 수 없다.
+            "reward_tiers": dict(self.core.server_tiers or {}),
+            "server_name": self.core.server_name,
+            "server_ts": self.core.server_ts,
+        }
         self.main_win = MainWindow(preset=preset)
         center_on_screen(self.main_win)
         self.main_win.show()
