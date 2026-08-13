@@ -70,7 +70,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.0.1"
+VERSION = "v5.1.1"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -731,38 +731,39 @@ class ZomboidAdapter(GameAdapter):
     # featureId -> 표시 라벨. rewardManager.lua의 rewardHandlers 키와 반드시 1:1로 일치해야 함
     # (mod_source.txt 기준 — 임의로 이름 바꾸지 말 것).
     FEATURES = {
-        "buff_roulette":       "버프 룰렛",
-        "debuff_roulette":     "디버프 룰렛",
-        "random_weapon":       "랜덤 무기",
-        "zombie_roulette":     "좀비 룰렛",
-        "vaccine":             "백신",
-        "vehicle_drop":        "차량 공중보급",
-        "sprinter5":           "뛰좀 소환",
-        "random_teleport":     "랜덤 텔레포트",
-        "random_skill_potion": "스킬 각성제",
-        "mutant_spawn":        "특수좀비 소환",
-        "inv_save_ticket":     "인벤토리 세이브 티켓",
-        "fire_support":        "화력지원 룰렛",
-        "missile":             "미사일 폭격",
-        "zombie_rain":         "좀비 레인",
-        "rise_up_dead_man":    "강령술",
+        "buff_roulette":				"버프 룰렛",
+        "debuff_roulette":				"디버프 룰렛",
+        "random_weapon":				"랜덤 무기",
+        "zombie_roulette":				"좀비 룰렛",
+        "vaccine":						"백신",
+        "vehicle_drop":					"차량 공중보급",
+        "sprinter5":					"뛰좀 소환",
+        "random_teleport":				"랜덤 텔레포트",
+        "random_skill_potion":			"스킬 각성제",
+        "mutant_spawn":					"특수좀비 소환",
+        "inv_save_ticket":				"인벤토리 세이브 티켓",
+        "fire_support":					"화력지원 룰렛",
+        "missile":						"미사일 폭격",
+        "zombie_rain":					"좀비 레인",
+        "rise_up_dead_man":				"강령술",
 
-        "horde_night":         "호드나이트",
-        "medical_box":         "의약품 랜덤박스",
+        "medical_box":					"의약품 랜덤박스",
+        "blood_moon":					"블러드문",
+        "horde_night":					"호드나이트",
 
-        # "revive_ticket":       "즉시부활 티켓 (미구현)",
-        # "secret_passage_kit":  "비밀통로 키트 (미구현)",
+        # "revive_ticket":"즉시부활 티켓 (미구현)",
+        # "secret_passage_kit":"비밀통로 키트 (미구현)",
 
         #미사용
-        "bandit_melee":        "암살자 파견 (근접)",
-        "bandit_ranged":       "암살자 파견 (원거리)",
-        # "exile":               "산타마을 유배 (삭제예정)",
-        # "backroom":            "백룸 (삭제예정)",
+        "bandit_melee":					"암살자 파견 (근접)",
+        "bandit_ranged":				"암살자 파견 (원거리)",
+        # "exile":"산타마을 유배 (삭제예정)",
+        # "backroom":"백룸 (삭제예정)",
     }
 
     # 서버 전체에 영향을 주는 후원(서버후원). 여기 없는 featureId 는 전부 개인후원으로 취급한다.
     # 카테고리는 featureId 의 고정 속성이라 프리셋 파일 형식({amount: featureId})은 그대로다.
-    SERVER_FEATURES = {"horde_night", "medical_box"}
+    SERVER_FEATURES = {"medical_box", "blood_moon", "horde_night"}
 
     @classmethod
     def feature_category(cls, fid):
@@ -783,10 +784,11 @@ class ZomboidAdapter(GameAdapter):
         30000:  "mutant_spawn",
         40000:  "inv_save_ticket",
         50000:  "fire_support",
-        60000: "missile",
-        70000: "zombie_rain",
-        80000: "rise_up_dead_man",
-        5500:  "medical_box",          # 서버후원
+        60000:  "missile",
+        70000:  "zombie_rain",
+        80000:  "rise_up_dead_man",
+        5500:   "medical_box",          # 서버후원
+        66600:  "blood_moon",           # 서버후원
         100000: "horde_night",          # 서버후원
     }
 
