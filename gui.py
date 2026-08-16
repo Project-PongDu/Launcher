@@ -71,7 +71,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.2.1"
+VERSION = "v5.3.1"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -2269,6 +2269,7 @@ class LauncherWindow(QWidget):
         self._uuid = ""; self._name = ""
         self._live = False; self._connected = False; self._tier = False
         self._logging_in = False
+        self._confirm_ready = False   # 로그인 확인됨 → 로그인 버튼이 '확인' 버튼으로 바뀐 상태
         self.main_win = None
         self.cfg = load_config()       # MainWindow와 같은 config.json 공유
         self._game_dir = pz_game_dir() # PZ 설치 폴더 (최적화용, 수동지정 우선 / 못 찾으면 None)
@@ -2276,7 +2277,9 @@ class LauncherWindow(QWidget):
         self.setStyleSheet(DARK_QSS)
         # preset 있으면 로그인 완료 상태(체크리스트)부터 시작, 없으면 자동 로그인 시도
         if preset and preset.get("uuid"):
-            self._on_resolved(preset["uuid"], preset.get("name", ""))
+            self._uuid = preset["uuid"]
+            self._name = preset.get("name", "") or (preset["uuid"][:8] + "…")
+            self._enter_check_page()
         else:
             QTimer.singleShot(200, self._start_auto_login)
         # 최적화는 자동 적용하지 않는다. 상태 라벨만 갱신하고, 실제 변경은
@@ -2434,6 +2437,11 @@ class LauncherWindow(QWidget):
         self.core.auto_login()
 
     def _login_click(self):
+        """같은 버튼이 두 역할을 한다: 로그인 대기 상태에서는 '치지직 로그인',
+           로그인이 확인된 뒤에는 '확인'(→ 연동 준비 확인 화면으로 진행)."""
+        if self._confirm_ready:
+            self._enter_check_page()
+            return
         self._logging_in = True
         self.login_btn.setEnabled(False)
         self.login_cancel_btn.show()
@@ -2441,22 +2449,50 @@ class LauncherWindow(QWidget):
         self.core.browser_login()
 
     def _login_cancel_click(self):
+        """로그인 진행 중이면 진행 중단, 로그인 확인 대기('확인' 표시) 상태면
+           그 계정으로 진행하지 않고 저장 토큰을 지운 뒤 로그인 화면으로 되돌린다.
+           (확인 상태에서는 core 쪽 로그인 흐름이 이미 끝나 cancel_login 이 무의미하다)"""
+        if self._confirm_ready:
+            self._uuid = ""; self._name = ""
+            _clear_refresh_token()
+            self._on_login_needed("")
+            return
         self.core.cancel_login()
 
     def _on_login_needed(self, detail):
         """자동 로그인 실패/브라우저 로그인 실패·취소 → 로그인 버튼 대기 상태."""
         self._logging_in = False
+        self._confirm_ready = False
+        self.login_btn.setText("치지직 로그인")
         self.login_btn.setEnabled(True)
         self.login_cancel_btn.hide()
         self.login_status.setText(detail or "")
         self.stack.setCurrentIndex(0)
 
     def _on_resolved(self, uuid, name):
+        """로그인/화이트리스트 통과. 여기서 바로 다음 화면으로 넘기지 않고,
+           비활성이던 로그인 버튼을 '확인' 버튼으로 바꿔 사용자가 직접 누르게 한다.
+           (자동 전환이면 어떤 계정으로 붙었는지 확인할 틈이 없음)"""
         self._uuid = uuid
         self._name = name or (uuid[:8] + "…")
         self._logging_in = False
-        self.login_cancel_btn.hide()
+        self._confirm_ready = True
+        # 취소 버튼은 그대로 남긴다 — 비활성 '치지직 로그인' 버튼만 활성 '확인'으로 바뀐다.
+        # (이 상태의 취소 = 이 계정으로 진행 안 함 → 토큰 지우고 로그인 화면으로)
+        self.login_cancel_btn.show()
+        self.login_status.setText(
+            f"<span style='color:#5dcaa5; font-weight:bold'>[ {self._name} ]</span> 계정으로 로그인됐습니다")
+        self.login_status.setTextFormat(Qt.RichText)
+        self.login_btn.setText("확인")
+        self.login_btn.setEnabled(True)
+        self.stack.setCurrentIndex(0)
+
+    def _enter_check_page(self):
+        """'확인'을 눌렀을 때(또는 메인에서 게이트로 복귀했을 때) 연동 준비 확인 화면으로."""
+        self._confirm_ready = False
+        self.login_btn.setText("치지직 로그인")
         self.login_status.setText("")
+        self.login_status.setTextFormat(Qt.AutoText)
         self.welcome.setText(f"<span style='color:#5dcaa5; font-size:26px; font-weight:900'>[ {self._name} ]</span> 님, 환영합니다")
         self._live = False; self._connected = False; self._tier = False
         self._set_row(self.r_uuid, True,  "치지직 로그인 완료")
@@ -2465,10 +2501,13 @@ class LauncherWindow(QWidget):
         self._set_row(self.r_tier, False, "서버 리워드 설정 확인 중…")
         self.connect_btn.setEnabled(False)
         self.stack.setCurrentIndex(2)
-        self.core.start_poll(uuid)
+        self.core.start_poll(self._uuid)
 
     def _on_invalid(self):
         self._logging_in = False
+        self._confirm_ready = False
+        self.login_btn.setText("치지직 로그인")
+        self.login_status.setText("")
         self.login_cancel_btn.hide()
         self.stack.setCurrentIndex(1)
 
