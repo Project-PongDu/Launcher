@@ -12,8 +12,9 @@ gui.py  —  퐁듀 런처 : 치지직 → 좀보이드 후원연동 (단일 창
     GameAdapter / ZomboidAdapter   : 게임별 출력(경로 탐지 + rewards.txt 기록). 게임 확장 포인트.
     DonationWorker                 : 코어. 스레드+asyncio로 Source 를 돌리고 Qt 시그널로 GUI에 전달.
     MainWindow                     : PyQt5 단일 창 UI.
-    PZ 원클릭 최적화               : 앱 실행 시 자동으로 PZ 설치 폴더를 찾아 JVM 힙을 RAM 절반으로
-                                     설정하고 좀비 연산 패치 class 9개를 교체 (원본 자동 백업).
+    OptimizeDialog                 : 게임 최적화 설정 창. 자동 적용 없음 — PZ 설치 폴더를 고르고
+                                     항목(힙 크기 / 좀비·청크 연산 패치 class)을 체크해 적용/해제.
+                                     원본은 게임 폴더 puppet_opt_backup/ 에 최초 1회 자동 백업.
 
 공식 Open API (v4.0.0 — 비공식 채팅 WS → 공식 세션 + 인증 중개 서버 전환):
     인증        : OAuth2. 게이트에서 브라우저 로그인 → localhost 콜백으로 code 수신 →
@@ -70,7 +71,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.1.1"
+VERSION = "v5.2.1"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -919,27 +920,50 @@ def load_server_tiers():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  PZ 원클릭 최적화 (구 PZ_optimizer.zip 통합)
+#  PZ 최적화 (구 PZ_optimizer.zip 통합)
+#  - 자동 적용 없음. '최적화 설정' 창에서 사용자가 항목을 골라 [적용]을 눌러야만 파일이 바뀐다.
+#  - 항목 단위로 개별 적용/해제 가능 (체크 = 패치본, 해제 = 백업 원본 복원)
 #  - JVM 힙을 전체 RAM의 절반으로: ProjectZomboid64.json(스팀 실행용) + .bat(직접 실행용) 패치
 #  - 좀비 연산/청크 로딩 패치 class 9개 교체 (opt_conf/ 리소스, exe에 --add-data로 포함)
-#  - 원본은 게임 폴더의 puppet_opt_backup/ 에 최초 1회 백업 → '해제'로 언제든 복원
+#  - 원본은 게임 폴더의 puppet_opt_backup/ 에 최초 1회 백업 → 체크 해제로 언제든 복원
 #  - Program Files 등 쓰기 권한 없는 경로면 --pz-optimize 플래그로 자신을 관리자 재실행
-#  주의: B41 전용 패치. 대상 class 원본이 하나라도 없으면(B42 등) 건드리지 않고 중단.
+#  주의: B41 전용 패치. 대상 원본이 없는 항목(B42 등)은 창에서 비활성으로 표시하고 건드리지 않음.
+#
+#  [항목을 "파일 1개 = 체크박스 1개"로 쪼개지 않은 이유]
+#    IsoWorld$* 는 IsoWorld 의 내부 클래스라 서로 버전이 맞아야 한다. 하나만 패치본이고
+#    나머지가 원본이면 런타임에 NoSuchMethodError/VerifyError 로 게임이 죽는다.
+#    json/bat 도 마찬가지로 "힙 크기" 하나를 두 실행경로에 쓰는 것뿐이라, 한쪽만 바꾸면
+#    bat 로 켠 유저는 여전히 3GB 로 돈다. 따라서 같이 움직여야만 하는 파일은 한 그룹으로
+#    묶고, 그룹 안에 실제로 교체되는 파일 목록을 UI 에 그대로 노출한다.
 # ═══════════════════════════════════════════════════════════════════════════════
 OPT_DIRNAME = "opt_conf"
-OPT_CLASS_TARGETS = {                      # 패치 파일명 -> 게임 폴더 내 상대 경로
-    "IsoChunkMap.class":                 "zombie/iso",
-    "IsoWorld.class":                    "zombie/iso",
-    "IsoWorld$CompDistToPlayer.class":   "zombie/iso",
-    "IsoWorld$CompScoreToPlayer.class":  "zombie/iso",
-    "IsoWorld$Frame.class":              "zombie/iso",
-    "IsoWorld$MetaCell.class":           "zombie/iso",
-    "IsoWorld$s_performance.class":      "zombie/iso",
-    "NetworkZombiePacker.class":         "zombie/popman",
-    "ZombieCountOptimiser.class":        "zombie/popman",
-}
 OPT_BACKUP_DIRNAME = "puppet_opt_backup"
 PZ_APPID = "108600"
+
+# key   : 설정 저장/CLI 인자용 식별자
+# kind  : "class" = opt_conf 의 패치본으로 교체 / "heap" = 힙 인자 치환
+# label : 체크박스 표시명
+# files : 게임 폴더 기준 상대경로 (그룹 내 전부 함께 적용/해제)
+OptGroup = namedtuple("OptGroup", "key kind label files")
+
+OPT_GROUPS = [
+    OptGroup("chunk", "class", "청크 로딩 최적화",
+             ["zombie/iso/IsoChunkMap.class"]),
+    OptGroup("world", "class", "월드 업데이트 / 좀비 정렬 연산 최적화",
+             ["zombie/iso/IsoWorld.class",
+              "zombie/iso/IsoWorld$CompDistToPlayer.class",
+              "zombie/iso/IsoWorld$CompScoreToPlayer.class",
+              "zombie/iso/IsoWorld$Frame.class",
+              "zombie/iso/IsoWorld$MetaCell.class",
+              "zombie/iso/IsoWorld$s_performance.class"]),
+    OptGroup("netzombie", "class", "좀비 네트워크 패킷 최적화",
+             ["zombie/popman/NetworkZombiePacker.class"]),
+    OptGroup("zcount", "class", "좀비 개체수 연산 최적화",
+             ["zombie/popman/ZombieCountOptimiser.class"]),
+    OptGroup("heap", "heap", "JVM 힙 메모리 = 전체 RAM 의 절반",
+             ["ProjectZomboid64.json", "ProjectZomboid64.bat"]),
+]
+OPT_GROUP_BY_KEY = {g.key: g for g in OPT_GROUPS}
 
 _XMX_RE = re.compile(r"-Xmx\d+[mMgG]")
 _XMS_RE = re.compile(r"-Xms\d+[mMgG]")
@@ -1051,6 +1075,31 @@ def find_pz_dir():
     return None
 
 
+def pz_game_dir():
+    """실제로 쓸 PZ 설치 폴더. 설정에 수동 지정(pz_dir)이 있으면 그걸 우선한다.
+       (Zomboid 유저폴더와 달리 여기는 '게임이 설치된' 폴더 — ProjectZomboid64.json 이 있는 곳)"""
+    override = load_config().get("pz_dir", "")
+    if override:
+        p = Path(override)
+        if p.exists():
+            return p
+    return find_pz_dir()
+
+
+def set_pz_dir_override(path):
+    cfg = load_config()
+    cfg["pz_dir"] = str(path) if path else ""
+    save_config(cfg)
+
+
+def is_pz_dir(p) -> bool:
+    """최소 조건: ProjectZomboid64.json 이 있어야 우리가 아는 PZ 설치 폴더."""
+    try:
+        return p is not None and (Path(p) / "ProjectZomboid64.json").exists()
+    except OSError:
+        return False
+
+
 def _backup_once(game_dir: Path, rel):
     """원본을 puppet_opt_backup/에 백업. 이미 백업본이 있으면 건드리지 않음(최초 원본 보존)."""
     src = game_dir / rel
@@ -1066,35 +1115,94 @@ def _patched_vmargs(args, mb: int):
     return [f"-Xms{mb}m", f"-Xmx{mb}m"] + out
 
 
-def apply_pz_optimization(game_dir: Path) -> int:
-    """최적화 적용. 반환: 설정한 힙(MB). 권한 문제는 PermissionError 그대로 던짐 → 호출자가 승격."""
-    conf = opt_conf_dir()
-    if conf is None:
-        raise RuntimeError("패치 리소스(opt_conf)가 빌드에 포함되지 않음")
+def _json_heap_mb(game_dir) -> int:
+    """ProjectZomboid64.json 의 -Xmx 값(MB). 못 읽으면 0."""
+    try:
+        data = json.loads((game_dir / "ProjectZomboid64.json").read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    for a in data.get("vmArgs", []):
+        m = re.match(r"-Xmx(\d+)m$", str(a), re.I)
+        if m:
+            return int(m.group(1))
+    return 0
+
+
+# ── 항목(그룹) 단위 조회/적용/해제 ────────────────────────────────────────────
+def opt_group_available(g, game_dir):
+    """이 항목을 이 설치 폴더에 적용할 수 있는지. 반환: (가능여부, 불가사유)"""
+    if game_dir is None:
+        return False, "PZ 설치 폴더 없음"
+    if g.kind == "class":
+        conf = opt_conf_dir()
+        if conf is None:
+            return False, "패치 리소스(opt_conf) 없음"
+        for rel in g.files:
+            fname = rel.rsplit("/", 1)[-1]
+            if not (conf / fname).exists():
+                return False, f"패치 파일 누락: {fname}"
+            # 패치본이 이미 덮여 있어도 파일 자체는 존재해야 한다. 없으면 구조가 다른 빌드(B42 등).
+            if not (game_dir / rel).exists():
+                return False, f"게임 파일 없음: {rel} (B41 아님?)"
+        return True, ""
+    # heap
+    if not (game_dir / "ProjectZomboid64.json").exists():
+        return False, "ProjectZomboid64.json 없음"
+    if half_ram_mb() <= 0:
+        return False, "RAM 크기를 알 수 없음"
+    return True, ""
+
+
+def opt_group_applied(g, game_dir) -> bool:
+    """이 항목이 현재 '패치 상태'인지. 부분 적용은 False (적용 누르면 다시 맞춰진다)."""
+    if game_dir is None:
+        return False
+    if g.kind == "class":
+        conf = opt_conf_dir()
+        if conf is None:
+            return False
+        for rel in g.files:
+            fname = rel.rsplit("/", 1)[-1]
+            src, dst = conf / fname, game_dir / rel
+            try:
+                if not dst.exists() or dst.read_bytes() != src.read_bytes():
+                    return False
+            except OSError:
+                return False
+        return True
     mb = half_ram_mb()
-    if mb <= 0:
-        raise RuntimeError("RAM 크기를 알 수 없음")
-    # 사전 검증: 대상 원본·패치 파일 전부 존재해야 진행 (B42 등 구조 다르면 아무것도 안 건드림)
-    for fname, sub in OPT_CLASS_TARGETS.items():
-        if not (conf / fname).exists():
-            raise RuntimeError(f"패치 파일 누락: {fname}")
-        if not (game_dir / sub / fname).exists():
-            raise RuntimeError(f"게임 파일 구조가 예상과 다름: {sub}/{fname} 없음 (B41 맞는지 확인)")
-    jpath = game_dir / "ProjectZomboid64.json"
-    if not jpath.exists():
-        raise RuntimeError("ProjectZomboid64.json 없음")
-    # 백업 (최초 1회)
-    for fname, sub in OPT_CLASS_TARGETS.items():
-        _backup_once(game_dir, Path(sub) / fname)
-    _backup_once(game_dir, Path("ProjectZomboid64.json"))
-    _backup_once(game_dir, Path("ProjectZomboid64.bat"))
-    # class 교체 + 바이트 검증
-    for fname, sub in OPT_CLASS_TARGETS.items():
-        src, dst = conf / fname, game_dir / sub / fname
-        shutil.copy2(src, dst)
-        if dst.read_bytes() != src.read_bytes():
-            raise RuntimeError(f"복사 검증 실패: {fname}")
+    if mb <= 0 or _json_heap_mb(game_dir) != mb:
+        return False
+    bpath = game_dir / "ProjectZomboid64.bat"
+    if bpath.exists():
+        try:
+            raw = bpath.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        # bat 안의 -Xmx 는 여러 줄에 나온다. 하나라도 다른 값이면 미적용으로 본다
+        # (json만 고치고 bat은 3GB 그대로 남는 케이스를 '적용됨'으로 오판하지 않기 위함)
+        found = _XMX_RE.findall(raw)
+        if not found or any(x.lower() != f"-xmx{mb}m" for x in found):
+            return False
+    return True
+
+
+def apply_opt_group(g, game_dir):
+    """항목 적용. 권한 문제는 PermissionError 그대로 던짐 → 호출자가 관리자 승격."""
+    conf = opt_conf_dir()
+    for rel in g.files:
+        _backup_once(game_dir, Path(rel))
+    if g.kind == "class":
+        for rel in g.files:
+            fname = rel.rsplit("/", 1)[-1]
+            src, dst = conf / fname, game_dir / rel
+            shutil.copy2(src, dst)
+            if dst.read_bytes() != src.read_bytes():
+                raise RuntimeError(f"복사 검증 실패: {fname}")
+        return
+    mb = half_ram_mb()
     # json (스팀 런처가 읽는 쪽): vmArgs의 Xms/Xmx만 교체, 나머지 보존
+    jpath = game_dir / "ProjectZomboid64.json"
     data = json.loads(jpath.read_text(encoding="utf-8"))
     data["vmArgs"] = _patched_vmargs(data.get("vmArgs", []), mb)
     jpath.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -1106,64 +1214,83 @@ def apply_pz_optimization(game_dir: Path) -> int:
         raw = _XMX_RE.sub(f"-Xmx{mb}m", raw)
         raw = _XMS_RE.sub(f"-Xms{mb}m", raw)
         bpath.write_text(raw, encoding="utf-8")
-    return mb
 
 
-def restore_pz_optimization(game_dir: Path) -> int:
-    """puppet_opt_backup/의 원본을 전부 되돌린다. 반환: 복원한 파일 수."""
+def restore_opt_group(g, game_dir):
+    """puppet_opt_backup/ 의 원본으로 되돌린다. 백업이 하나도 없으면 RuntimeError."""
     bdir = game_dir / OPT_BACKUP_DIRNAME
-    if not bdir.exists():
-        raise RuntimeError("백업이 없음 — Steam '게임 파일 무결성 검사'로 복원해 주세요")
     n = 0
-    for src in bdir.rglob("*"):
-        if src.is_file():
-            dst = game_dir / src.relative_to(bdir)
+    for rel in g.files:
+        src = bdir / rel
+        if src.exists():
+            dst = game_dir / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
             n += 1
-    return n
+    if n == 0:
+        raise RuntimeError(f"'{g.label}' 백업이 없음 — Steam '게임 파일 무결성 검사'로 복원해 주세요")
+
+
+def apply_opt_selection(game_dir, keys):
+    """체크된 항목은 적용, 체크 해제된 항목은 원본 복원. 반환: (적용수, 복원수).
+       적용 불가(available=False) 항목은 건드리지 않고 조용히 넘어간다."""
+    keys = set(keys or [])
+    applied = restored = 0
+    for g in OPT_GROUPS:
+        ok, _ = opt_group_available(g, game_dir)
+        if not ok:
+            continue
+        now = opt_group_applied(g, game_dir)
+        if g.key in keys:
+            if not now:
+                apply_opt_group(g, game_dir)
+                applied += 1
+        elif now:
+            restore_opt_group(g, game_dir)
+            restored += 1
+    return applied, restored
+
+
+def opt_applied_keys(game_dir):
+    """현재 적용돼 있는 항목 key 집합 (체크박스 초기값)."""
+    out = set()
+    if game_dir is None:
+        return out
+    for g in OPT_GROUPS:
+        ok, _ = opt_group_available(g, game_dir)
+        if ok and opt_group_applied(g, game_dir):
+            out.add(g.key)
+    return out
 
 
 def pz_optimize_state(game_dir):
-    """('applied'|'partial'|'none', json의 Xmx MB). partial = class 일부만 패치 상태(게임 업데이트 등)."""
-    conf = opt_conf_dir()
-    if conf is None or game_dir is None:
+    """('applied'|'partial'|'none', json의 Xmx MB). 적용 가능한 항목 기준으로 집계."""
+    if game_dir is None:
         return ("none", 0)
-    matched = total = 0
-    for fname, sub in OPT_CLASS_TARGETS.items():
-        p = conf / fname
-        if not p.exists():
+    total = matched = 0
+    for g in OPT_GROUPS:
+        ok, _ = opt_group_available(g, game_dir)
+        if not ok:
             continue
         total += 1
-        t = game_dir / sub / fname
-        try:
-            if t.exists() and t.read_bytes() == p.read_bytes():
-                matched += 1
-        except OSError:
-            pass
-    heap = 0
-    try:
-        data = json.loads((game_dir / "ProjectZomboid64.json").read_text(encoding="utf-8"))
-        for a in data.get("vmArgs", []):
-            m = re.match(r"-Xmx(\d+)m$", str(a), re.I)
-            if m:
-                heap = int(m.group(1))
-    except Exception:
-        pass
-    if total and matched == total and heap == half_ram_mb():
+        if opt_group_applied(g, game_dir):
+            matched += 1
+    heap = _json_heap_mb(game_dir)
+    if total and matched == total:
         return ("applied", heap)
     if matched > 0:
         return ("partial", heap)
     return ("none", heap)
 
 
-def run_elevated_optimizer(action: str) -> bool:
-    """관리자 권한으로 자기 자신을 --pz-optimize/--pz-restore 플래그로 재실행 (UAC 프롬프트).
+def run_elevated_optimizer(game_dir, keys) -> bool:
+    """관리자 권한으로 자기 자신을 --pz-optimize 로 재실행 (UAC 프롬프트).
+       선택 상태를 그대로 넘겨야 하므로 폴더/키 목록을 인자로 전달한다.
        반환: 승격 프로세스 실행 성공 여부 (거부/실패 시 False)."""
     if os.name != "nt":
         return False
     import ctypes
-    flag = "--pz-optimize" if action == "apply" else "--pz-restore"
+    flag = f'--pz-optimize --pz-dir "{game_dir}" --pz-keys "{",".join(sorted(keys or []))}"'
     if getattr(sys, "frozen", False):
         exe, params = sys.executable, flag
     else:
@@ -1176,27 +1303,33 @@ def run_elevated_optimizer(action: str) -> bool:
         return False
 
 
-def _optimizer_cli(action: str):
-    """--pz-optimize / --pz-restore 진입점 (승격 헬퍼). 단일 인스턴스 락을 안 잡으므로
+def _optimizer_cli(argv):
+    """--pz-optimize 진입점 (승격 헬퍼). 단일 인스턴스 락을 안 잡으므로
        본체가 떠 있는 상태에서도 동작. 결과만 메시지박스로 알리고 종료."""
     _app = QApplication(sys.argv)
+
+    def _arg(name):
+        try:
+            return argv[argv.index(name) + 1]
+        except (ValueError, IndexError):
+            return ""
+
     try:
-        game = find_pz_dir()
-        if game is None:
+        raw_dir = _arg("--pz-dir")
+        game = Path(raw_dir) if raw_dir else pz_game_dir()
+        if game is None or not is_pz_dir(game):
             raise RuntimeError("Project Zomboid 설치 폴더를 못 찾음")
         if pz_running():
             raise RuntimeError("Project Zomboid가 실행 중이라 파일을 교체할 수 없습니다.\n게임 종료 후 다시 시도해 주세요.")
-        if action == "apply":
-            mb = apply_pz_optimization(game)
-            QMessageBox.information(None, "게임 최적화",
-                                    f"최적화 적용 완료!\n\n힙 메모리: {mb:,} MB (전체 RAM의 절반)\n경로: {game}")
-        else:
-            n = restore_pz_optimization(game)
-            QMessageBox.information(None, "게임 최적화", f"원본 복원 완료 ({n}개 파일)\n경로: {game}")
+        keys = [k for k in _arg("--pz-keys").split(",") if k]
+        applied, restored = apply_opt_selection(game, keys)
+        QMessageBox.information(None, "게임 최적화",
+                                f"완료!\n\n적용 {applied}개 · 원본 복원 {restored}개\n경로: {game}")
         sys.exit(0)
     except Exception as e:
         QMessageBox.warning(None, "게임 최적화 실패", str(e))
         sys.exit(1)
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1457,6 +1590,170 @@ class RewardPresetDialog(QDialog):
 
         close_btn = QPushButton("닫기"); close_btn.clicked.connect(self.accept)
         root.addWidget(close_btn)
+
+
+class OptimizeDialog(QDialog):
+    """게임 최적화 설정 창 — PZ 설치 폴더 지정 + 항목별 체크박스.
+
+       자동 적용은 없다. 창을 열면 디스크의 현재 상태를 읽어 체크박스를 맞춰주고
+       ([적용됨]=체크 / [미적용]=해제), [적용]을 눌렀을 때만 파일을 건드린다.
+         · 체크했는데 미적용  → 패치본으로 교체 (원본은 puppet_opt_backup/ 에 최초 1회 백업)
+         · 해제했는데 적용됨  → 백업 원본으로 복원
+       쓰기 권한이 없으면(Program Files 등) 선택 상태를 그대로 인자로 넘겨 관리자 권한 재실행."""
+
+    def __init__(self, parent=None, game_dir=None):
+        super().__init__(parent)
+        self.setWindowTitle("게임 최적화 설정")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        ico = resource_path(ICON_FILE)
+        if os.path.exists(ico):
+            self.setWindowIcon(QIcon(ico))
+        self.setFixedSize(670, 700)
+        self.game_dir = game_dir
+        self.boxes = {}          # key -> QCheckBox
+        self._elevating = False  # 관리자 창에 넘긴 뒤 결과 재확인 대기중
+        self._build()
+        self.setStyleSheet(DARK_QSS)
+        self._reload_state()
+
+    def _muted(self, t):
+        l = QLabel(t); l.setObjectName("muted"); return l
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18); root.setSpacing(10)
+
+        sect = QLabel("게임 최적화"); sect.setObjectName("sect")
+        root.addWidget(sect)
+        root.addWidget(self._muted(
+            "체크한 항목만 게임 파일에 적용됩니다. 원본은 게임 폴더의\n"
+            f"{OPT_BACKUP_DIRNAME}/ 에 백업되며, 체크를 해제하면 그 원본으로 되돌립니다."))
+
+        drow = QHBoxLayout()
+        drow.addWidget(self._muted("PZ 설치 폴더"))
+        self.dir_input = QLineEdit(str(self.game_dir) if self.game_dir else "")
+        self.dir_input.setReadOnly(True)
+        drow.addWidget(self.dir_input, 1)
+        pick = QPushButton("폴더 선택"); pick.setObjectName("link")
+        pick.clicked.connect(self._choose_dir)
+        drow.addWidget(pick)
+        root.addLayout(drow)
+
+        self.status = QLabel(""); self.status.setObjectName("hint")
+        self.status.setWordWrap(True)
+        root.addWidget(self.status)
+
+        host = QWidget()
+        self.list_v = QVBoxLayout(host)
+        self.list_v.setContentsMargins(2, 2, 2, 2); self.list_v.setSpacing(2)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(host)
+        root.addWidget(scroll, 1)
+
+        for g in OPT_GROUPS:
+            cb = QCheckBox(g.label)
+            self.boxes[g.key] = cb
+            self.list_v.addWidget(cb)
+            files = QLabel("     " + "\n     ".join(g.files))
+            files.setObjectName("hint")
+            self.list_v.addWidget(files)
+            self.list_v.addSpacing(6)
+        self.list_v.addStretch(1)
+
+        brow = QHBoxLayout()
+        all_btn = QPushButton("전체 선택"); all_btn.setObjectName("link")
+        all_btn.clicked.connect(lambda: self._set_all(True))
+        none_btn = QPushButton("전체 해제"); none_btn.setObjectName("link")
+        none_btn.clicked.connect(lambda: self._set_all(False))
+        brow.addWidget(all_btn); brow.addWidget(none_btn); brow.addStretch(1)
+        self.apply_btn = QPushButton("적용"); self.apply_btn.setObjectName("start")
+        self.apply_btn.clicked.connect(self._apply)
+        brow.addWidget(self.apply_btn)
+        close_btn = QPushButton("닫기"); close_btn.clicked.connect(self.accept)
+        brow.addWidget(close_btn)
+        root.addLayout(brow)
+
+    # --- 상태 ---
+    def _set_all(self, on):
+        for cb in self.boxes.values():
+            if cb.isEnabled():
+                cb.setChecked(on)
+
+    def _reload_state(self):
+        """디스크 현재 상태 → 체크박스/활성화/상태문구 반영."""
+        self.dir_input.setText(str(self.game_dir) if self.game_dir else "")
+        conf_missing = opt_conf_dir() is None
+        for g in OPT_GROUPS:
+            cb = self.boxes[g.key]
+            ok, why = opt_group_available(g, self.game_dir)
+            cb.setEnabled(ok)
+            cb.setChecked(bool(ok and opt_group_applied(g, self.game_dir)))
+            cb.setToolTip("" if ok else why)
+            cb.setText(g.label if ok else f"{g.label}  —  {why}")
+
+        msgs = []
+        if conf_missing:
+            msgs.append("패치 리소스(opt_conf)가 빌드에 포함되지 않아 class 교체 항목을 쓸 수 없습니다.")
+        if self.game_dir is None:
+            msgs.append("PZ 설치 폴더를 자동으로 찾지 못했습니다 — 폴더를 직접 지정해 주세요.")
+        elif not is_pz_dir(self.game_dir):
+            msgs.append("이 폴더에 ProjectZomboid64.json 이 없습니다 — PZ 설치 폴더가 맞는지 확인해 주세요.")
+        mb = half_ram_mb()
+        if mb > 0:
+            msgs.append(f"설정될 힙 크기: {mb:,} MB (전체 RAM {total_ram_mb():,} MB 의 절반)")
+        if pz_running():
+            msgs.append("Project Zomboid 실행 중 — 게임을 종료해야 파일을 바꿀 수 있습니다.")
+        self.status.setText("\n".join(msgs))
+        self.apply_btn.setEnabled(self.game_dir is not None and is_pz_dir(self.game_dir))
+
+    def _choose_dir(self):
+        start = str(self.game_dir) if self.game_dir else str(Path.home())
+        d = QFileDialog.getExistingDirectory(
+            self, "Project Zomboid 설치 폴더 선택 (ProjectZomboid64.json 이 있는 폴더)", start)
+        if not d:
+            return
+        p = Path(d)
+        if not is_pz_dir(p):
+            QMessageBox.warning(self, "게임 최적화",
+                                "선택한 폴더에 ProjectZomboid64.json 이 없습니다.\n"
+                                "…/steamapps/common/ProjectZomboid 폴더를 선택해 주세요.")
+            return
+        self.game_dir = p
+        set_pz_dir_override(p)
+        self._reload_state()
+
+    # --- 적용 ---
+    def _apply(self):
+        if self.game_dir is None:
+            return
+        if pz_running():
+            QMessageBox.information(self, "게임 최적화",
+                                    "Project Zomboid가 실행 중이라 파일을 바꿀 수 없습니다.\n"
+                                    "게임을 먼저 종료해 주세요.")
+            return
+        keys = [k for k, cb in self.boxes.items() if cb.isEnabled() and cb.isChecked()]
+        try:
+            applied, restored = apply_opt_selection(self.game_dir, keys)
+        except PermissionError:
+            # Program Files 등 쓰기 권한 없음 → 선택 상태 그대로 관리자 권한 프로세스에 위임
+            if run_elevated_optimizer(self.game_dir, keys):
+                self.status.setText("관리자 권한 창에서 처리 중…")
+                self._elevating = True
+                QTimer.singleShot(6000, self._reload_state)
+            else:
+                QMessageBox.warning(self, "게임 최적화", "실패 — 관리자 권한이 거부됐습니다.")
+            return
+        except Exception as e:
+            QMessageBox.warning(self, "게임 최적화", f"실패: {e}")
+            self._reload_state()
+            return
+        self._reload_state()
+        if applied or restored:
+            QMessageBox.information(self, "게임 최적화",
+                                    f"완료!\n\n적용 {applied}개 · 원본 복원 {restored}개")
+        else:
+            QMessageBox.information(self, "게임 최적화", "변경할 항목이 없습니다.")
 
 
 class MainWindow(QWidget):
@@ -1973,8 +2270,8 @@ class LauncherWindow(QWidget):
         self._live = False; self._connected = False; self._tier = False
         self._logging_in = False
         self.main_win = None
-        self.cfg = load_config()       # opt_mode 등 (MainWindow와 같은 config.json 공유)
-        self._game_dir = find_pz_dir() # PZ 설치 폴더 (최적화용, 못 찾으면 None)
+        self.cfg = load_config()       # MainWindow와 같은 config.json 공유
+        self._game_dir = pz_game_dir() # PZ 설치 폴더 (최적화용, 수동지정 우선 / 못 찾으면 None)
         self._build()
         self.setStyleSheet(DARK_QSS)
         # preset 있으면 로그인 완료 상태(체크리스트)부터 시작, 없으면 자동 로그인 시도
@@ -1982,8 +2279,9 @@ class LauncherWindow(QWidget):
             self._on_resolved(preset["uuid"], preset.get("name", ""))
         else:
             QTimer.singleShot(200, self._start_auto_login)
-        # 실행 즉시 원클릭 최적화 (창 뜬 뒤 살짝 늦게 — 최초 1회만 확인창, 이후 자동 유지)
-        QTimer.singleShot(400, self._opt_startup)
+        # 최적화는 자동 적용하지 않는다. 상태 라벨만 갱신하고, 실제 변경은
+        # 사용자가 '최적화 설정' 창에서 [적용]을 눌렀을 때만 일어난다.
+        self._opt_refresh_ui()
 
     # --- 빌드 ---
     def _build(self):
@@ -2021,13 +2319,12 @@ class LauncherWindow(QWidget):
         row.addWidget(self.login_cancel_btn)
         row.addStretch(1)
         v.addSpacing(8); v.addLayout(row); v.addStretch(1)
-        # 게임 최적화 상태 (하단 고정) — 적용/해제 토글
+        # 게임 최적화 상태 (하단 고정) — 상태 텍스트 + 설정 창 열기 버튼
         orow = QHBoxLayout(); orow.addStretch(1)
         self.opt_status = QLabel(""); self.opt_status.setObjectName("hint")
         orow.addWidget(self.opt_status)
-        self.opt_btn = QPushButton(""); self.opt_btn.setObjectName("link")
-        self.opt_btn.clicked.connect(self._opt_toggle)
-        self.opt_btn.hide()
+        self.opt_btn = QPushButton("최적화 설정"); self.opt_btn.setObjectName("link")
+        self.opt_btn.clicked.connect(self._open_opt_dialog)
         orow.addWidget(self.opt_btn); orow.addStretch(1)
         v.addLayout(orow)
         return w
@@ -2107,92 +2404,26 @@ class LauncherWindow(QWidget):
         txt.setText(text)
         txt.setStyleSheet(f"color:{'#e8e8ea' if done else '#9a9ca3'};")
 
-    # --- PZ 원클릭 최적화 ---
+    # --- PZ 최적화 (상태 표시 + 설정 창 열기. 자동 적용 없음) ---
     def _opt_refresh_ui(self):
-        """하단 상태 라벨 + 적용/해제 버튼 갱신."""
-        if opt_conf_dir() is None:
-            self.opt_status.setText("게임 최적화 — 패치 리소스 없음 (빌드에 opt_conf 미포함)")
-            self.opt_btn.hide(); return
+        """하단 상태 라벨 갱신. 버튼은 항상 '최적화 설정'으로 고정."""
         if self._game_dir is None:
             self.opt_status.setText("게임 최적화 — PZ 설치 폴더를 못 찾음")
-            self.opt_btn.hide(); return
+            return
         state, heap = pz_optimize_state(self._game_dir)
         if state == "applied":
-            self.opt_status.setText(f"게임 최적화 적용됨 · 힙 {heap:,}MB (RAM 절반)")
-            self.opt_btn.setText("해제")
+            self.opt_status.setText(f"게임 최적화 전체 적용됨 · 힙 {heap:,}MB")
         elif state == "partial":
-            self.opt_status.setText("게임 최적화 일부만 적용됨 (게임 업데이트?) — 재적용 필요")
-            self.opt_btn.setText("적용")
+            self.opt_status.setText(f"게임 최적화 일부 적용됨 · 힙 {heap:,}MB")
         else:
             self.opt_status.setText("게임 최적화 미적용")
-            self.opt_btn.setText("적용")
-        self.opt_btn.show()
 
-    def _opt_startup(self):
-        """앱 실행 시 자동 최적화. 동의창 없음.
-           - 최초 실행(config.json에 opt_mode 없음): 강제 적용 + opt_mode='auto' 저장.
-           - opt_mode='auto': 상태가 어긋나 있으면(게임 업데이트/RAM 변경 등) 조용히 재적용.
-           - opt_mode='off': 사용자가 '해제'를 눌러 껐던 상태 — 자동 적용하지 않고 그대로 둠.
-           (해제 상태는 이제 config.json에 저장되므로 앱을 껐다 켜도 유지된다.)"""
-        self._opt_refresh_ui()
-        if os.name != "nt" or self._game_dir is None or opt_conf_dir() is None:
-            return
-        if self.cfg.get("opt_mode") == "off":
-            return
-        state, _ = pz_optimize_state(self._game_dir)
-        if state == "applied":
-            return
-        if pz_running():
-            self.opt_status.setText("게임 최적화 대기 — PZ 실행 중엔 적용 불가 (게임 끄고 앱 재시작)")
-            return
-        self._opt_apply()
-        self.cfg["opt_mode"] = "auto"
-        save_config(self.cfg)
-
-    def _opt_apply(self):
-        try:
-            mb = apply_pz_optimization(self._game_dir)
-            self.opt_status.setText(f"게임 최적화 적용 완료 · 힙 {mb:,}MB")
-        except PermissionError:
-            # Program Files 등 쓰기 권한 없음 → 관리자 권한으로 자신을 재실행해 적용
-            if run_elevated_optimizer("apply"):
-                self.opt_status.setText("관리자 권한 창에서 적용 중…")
-                QTimer.singleShot(6000, self._opt_refresh_ui)
-            else:
-                self.opt_status.setText("게임 최적화 실패 — 관리자 권한이 거부됨")
-            return
-        except Exception as e:
-            self.opt_status.setText(f"게임 최적화 실패: {e}")
-            return
+    def _open_opt_dialog(self):
+        dlg = OptimizeDialog(self, self._game_dir)
+        dlg.exec_()
+        self._game_dir = dlg.game_dir or pz_game_dir()
         self._opt_refresh_ui()
 
-    def _opt_toggle(self):
-        """하단 적용/해제 토글. 선택 결과를 opt_mode('auto'|'off')로 config.json에 저장 —
-           다음 앱 실행 시 _opt_startup이 이 값을 그대로 따른다 (해제하면 계속 해제 상태 유지)."""
-        if self._game_dir is None:
-            return
-        if pz_running():
-            QMessageBox.information(self, "게임 최적화",
-                                    "Project Zomboid가 실행 중이라 파일을 바꿀 수 없습니다.\n게임을 먼저 종료해 주세요.")
-            return
-        state, _ = pz_optimize_state(self._game_dir)
-        if state == "applied":
-            try:
-                restore_pz_optimization(self._game_dir)
-                self.cfg["opt_mode"] = "off"; save_config(self.cfg)
-            except PermissionError:
-                if run_elevated_optimizer("restore"):
-                    self.cfg["opt_mode"] = "off"; save_config(self.cfg)
-                    self.opt_status.setText("관리자 권한 창에서 복원 중…")
-                    QTimer.singleShot(6000, self._opt_refresh_ui)
-                    return
-                QMessageBox.warning(self, "게임 최적화", "복원 실패 — 관리자 권한이 거부됨")
-            except Exception as e:
-                QMessageBox.warning(self, "게임 최적화", f"복원 실패: {e}")
-        else:
-            self.cfg["opt_mode"] = "auto"; save_config(self.cfg)
-            self._opt_apply()
-        self._opt_refresh_ui()
 
     # --- 흐름 ---
     def _start_auto_login(self):
@@ -2311,10 +2542,7 @@ def main():
     # 승격 헬퍼 진입점 — 단일 인스턴스 락보다 먼저 처리해야 함
     # (본체가 떠 있는 상태에서 관리자 권한으로 재실행되는 프로세스라 락을 잡으면 안 됨)
     if "--pz-optimize" in sys.argv:
-        _optimizer_cli("apply")
-        return
-    if "--pz-restore" in sys.argv:
-        _optimizer_cli("restore")
+        _optimizer_cli(sys.argv)
         return
 
     app = QApplication(sys.argv)
