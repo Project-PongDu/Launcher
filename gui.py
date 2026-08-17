@@ -71,7 +71,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.3.3"
+VERSION = "v5.3.4"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -2372,14 +2372,15 @@ class LauncherWindow(QWidget):
         v.addSpacing(6)
 
         zrow = QHBoxLayout()
+        zrow.addStretch(1)
         zrow.addWidget(self._muted("Zomboid 폴더"))
         self.zdir_input = QLineEdit(str(get_zomboid_dir())); self.zdir_input.setReadOnly(True)
         self.zdir_input.setMinimumWidth(300); self.zdir_input.setMaximumWidth(330)
-        zrow.addWidget(self.zdir_input, 1)
-        zrow.addStretch(1)
+        zrow.addWidget(self.zdir_input)
         zdir_btn = QPushButton("폴더 선택"); zdir_btn.setObjectName("link")
         zdir_btn.clicked.connect(self._choose_zomboid_dir)
         zrow.addWidget(zdir_btn)
+        zrow.addStretch(1)
         v.addLayout(zrow)
 
         v.addSpacing(4)
