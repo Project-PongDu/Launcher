@@ -71,7 +71,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.3.1"
+VERSION = "v5.3.2"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -838,10 +838,9 @@ async def fetch_live(uuid: str) -> bool:
     return (((data or {}).get("content") or {}).get("status")) == "OPEN"
 
 
-def pz_running() -> bool:
-    """Project Zomboid 클라이언트가 실행 중인지 프로세스 목록으로 확인."""
-    if FORCE_ONLINE:
-        return True
+def pz_running_real() -> bool:
+    """FORCE_ONLINE 을 무시하고 실제 프로세스 목록만으로 확인.
+    파일 교체 안전 체크(게임 최적화)처럼 '물리적으로 지금 떠 있는가'가 중요한 곳에서 쓴다."""
     KEY = "projectzomboid"
     try:                                         # psutil 있으면 우선 (의존성 아님, 있으면 사용)
         import psutil # pyright: ignore[reportMissingModuleSource]
@@ -865,6 +864,14 @@ def pz_running() -> bool:
         return KEY in out
     except Exception:
         return False
+
+
+def pz_running() -> bool:
+    """Project Zomboid 클라이언트가 실행 중인지 확인 (감시용).
+    테스트 모드(FORCE_ONLINE)에서는 게임 없이도 연동을 유지해야 하므로 실행 중으로 간주한다."""
+    if FORCE_ONLINE:
+        return True
+    return pz_running_real()
 
 
 def pz_connected() -> bool:
@@ -1319,7 +1326,7 @@ def _optimizer_cli(argv):
         game = Path(raw_dir) if raw_dir else pz_game_dir()
         if game is None or not is_pz_dir(game):
             raise RuntimeError("Project Zomboid 설치 폴더를 못 찾음")
-        if pz_running():
+        if pz_running_real():
             raise RuntimeError("Project Zomboid가 실행 중이라 파일을 교체할 수 없습니다.\n게임 종료 후 다시 시도해 주세요.")
         keys = [k for k in _arg("--pz-keys").split(",") if k]
         applied, restored = apply_opt_selection(game, keys)
@@ -1702,7 +1709,7 @@ class OptimizeDialog(QDialog):
         mb = half_ram_mb()
         if mb > 0:
             msgs.append(f"설정될 힙 크기: {mb:,} MB (전체 RAM {total_ram_mb():,} MB 의 절반)")
-        if pz_running():
+        if pz_running_real():
             msgs.append("Project Zomboid 실행 중 — 게임을 종료해야 파일을 바꿀 수 있습니다.")
         self.status.setText("\n".join(msgs))
         self.apply_btn.setEnabled(self.game_dir is not None and is_pz_dir(self.game_dir))
@@ -1727,7 +1734,7 @@ class OptimizeDialog(QDialog):
     def _apply(self):
         if self.game_dir is None:
             return
-        if pz_running():
+        if pz_running_real():
             QMessageBox.information(self, "게임 최적화",
                                     "Project Zomboid가 실행 중이라 파일을 바꿀 수 없습니다.\n"
                                     "게임을 먼저 종료해 주세요.")
