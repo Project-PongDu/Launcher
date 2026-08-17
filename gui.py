@@ -71,7 +71,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.3.2"
+VERSION = "v5.3.3"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -2157,8 +2157,12 @@ class LauncherCore(QObject):
             self._submit(self._poll())
 
     async def _poll(self):
+        global FORCE_ONLINE
         self._polling = True
         while self._polling:
+            # 테스트 편의: 게이트 체크리스트가 떠 있는 동안에도 config 의 force_online
+            # 변경이 즉시 반영되도록 매 주기 다시 읽는다 (작은 JSON 이라 비용 무시 가능).
+            FORCE_ONLINE = bool(load_config().get("force_online"))
             live = await fetch_live(self._uuid)
             self.live.emit(live)
             # PZ 실행 여부는 따로 확인하지 않는다 — 인게임 접속(pz_status.txt heartbeat)이
