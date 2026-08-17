@@ -71,7 +71,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.3.4"
+VERSION = "v5.4.0"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -1778,12 +1778,19 @@ class MainWindow(QWidget):
         self.cfg = load_config()
         self._returning = False                       # 게이트 복귀 중복 방지
         self.guard = None                             # PZ 종료 + 인게임 이탈 감시 (연동 중에만)
+        self._tier_timer = None                       # pongdu_tiers.txt 변경 감시 (_build 이후 시작)
+        self._tier_sig = None
         # 티어 편집 기능은 삭제됨 — 게이트가 이미 pongdu_tiers.txt에서 읽어 검증까지 끝낸
         # dict를 그대로 넘겨준다. 여기서는 계산도 재검증도 하지 않고 그대로 반영한다.
         self._load_reward_tiers()
         self.server_name = self.preset.get("server_name", "")
         self._build()
         self._restore()
+        # pongdu_tiers.txt 변경 감시 (연동 중/대기 중 무관하게 항상 동작)
+        self._tier_sig = self._tier_file_sig()
+        self._tier_timer = QTimer(self)
+        self._tier_timer.timeout.connect(self._watch_tiers)
+        self._tier_timer.start(3000)
         if self.preset.get("autostart"):
             QTimer.singleShot(300, self._start)   # 창 뜨고 나서 워커 시작 (게이트에서 로그인 완료됨)
 
@@ -1821,10 +1828,10 @@ class MainWindow(QWidget):
         root.addWidget(self._sep())
 
         # 확정된 리워드 티어 (서버 설정 — 읽기 전용, 런처에서는 편집 불가)
-        tier_hint = "리워드 티어  —  서버 설정 (편집 불가)"
-        if self.server_name:
-            tier_hint += f"  ·  {self.server_name}"
-        root.addWidget(self._muted(tier_hint))
+        # 서버 티어가 중간에 바뀌면 라벨의 서버명도 따라가야 하므로 참조를 들고 있는다.
+        self.tier_hint = self._muted("")
+        root.addWidget(self.tier_hint)
+        self._update_tier_hint()
         self.tiers_host = QWidget()
         self.tiers_host.setToolTip("서버장이 퐁듀 모드 샌드박스 설정에서 지정한 값입니다. 런처에서는 편집할 수 없습니다.")
         self.tiers_grid = QGridLayout(self.tiers_host)
@@ -1863,6 +1870,56 @@ class MainWindow(QWidget):
 
     def _sep(self):
         f = QFrame(); f.setObjectName("sep"); f.setFixedHeight(1); return f
+
+    def _update_tier_hint(self):
+        hint = "리워드 티어  —  서버 설정 (편집 불가)"
+        if self.server_name:
+            hint += f"  ·  {self.server_name}"
+        self.tier_hint.setText(hint)
+
+    # --- 서버 티어 실시간 반영 ---
+    def _tier_file_sig(self):
+        """pongdu_tiers.txt 의 (mtime_ns, size). 없거나 못 읽으면 None."""
+        try:
+            st = zomboid_lua_path("pongdu_tiers.txt").stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    def _watch_tiers(self):
+        """서버장이 게임 중 샌드박스 Apply 를 누르면 모드가 pongdu_tiers.txt 를 다시 쓴다.
+           게이트에서 뜬 스냅샷이 그대로 굳지 않도록 메인화면에서도 따라간다.
+           매 주기 전체 파싱하지 않고 mtime/size 가 바뀐 경우에만 읽는다."""
+        sig = self._tier_file_sig()
+        if sig is None or sig == self._tier_sig:
+            return
+        self._tier_sig = sig
+        tiers, server, _ts = load_server_tiers()
+        if not tiers:
+            # 모드가 쓰는 도중이거나 형식이 깨진 상태. 표시를 비우면 후원 처리 기준까지
+            # 흔들리므로 기존 값을 그대로 유지한다 (다음 주기에 다시 시도됨).
+            return
+        server = server or ""
+        if tiers == self.adapter.reward_tiers and server == self.server_name:
+            return
+        self.adapter.reward_tiers = tiers
+        self.server_name = server
+        # 게이트 복귀 후 재진입 시에도 최신값이 쓰이도록 preset 스냅샷도 같이 갱신
+        self.preset["reward_tiers"] = dict(tiers)
+        self.preset["server_name"] = server
+        self._update_tier_hint()
+        self._render_tier_display()
+        self._refresh_test_combo()
+        self._log(f"서버 리워드 티어 갱신됨 ({len(tiers)}개).")
+
+    def _refresh_test_combo(self):
+        """티어 변경 후 테스트 콤보 재구성. 선택 중이던 금액이 남아 있으면 유지한다."""
+        keep = self.test_combo.currentData()
+        self._build_test_combo()
+        if keep is not None:
+            i = self.test_combo.findData(keep)
+            if i >= 0:
+                self.test_combo.setCurrentIndex(i)
 
     def _render_tier_display(self):
         """adapter.reward_tiers -> 읽기 전용 2열 라벨 그리드 (금액 오름차순).
@@ -1913,6 +1970,8 @@ class MainWindow(QWidget):
         self.path_input.setText(str(p))
 
     def closeEvent(self, e):
+        if self._tier_timer is not None:
+            self._tier_timer.stop()
         if self.worker:
             self.worker.stop()
         super().closeEvent(e)
