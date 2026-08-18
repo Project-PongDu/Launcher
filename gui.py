@@ -71,7 +71,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.4.0"
+VERSION = "v5.4.1"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -1947,7 +1947,12 @@ class MainWindow(QWidget):
         """테스트 후원 목록. 카테고리 구분은 라벨 접미사로만 (콤보에 그룹 헤더를 넣으면
            선택 불가 더미 항목이 생겨 currentData() 로직에 방어 코드가 붙는다)."""
         self.test_combo.clear()
-        for amt, fid in sorted(self.adapter.reward_tiers.items()):
+        # 개인후원 전체(금액 오름차순) → 서버후원 전체(금액 오름차순) 순서.
+        # 금액과 무관하게 카테고리가 1차 정렬키다 (서버후원은 금액이 낮아도 항상 아래).
+        def _order(item):
+            amt, fid = item
+            return (1 if self.adapter.feature_category(fid) == "server" else 0, amt)
+        for amt, fid in sorted(self.adapter.reward_tiers.items(), key=_order):
             label = self.adapter.FEATURES.get(fid, fid)
             if self.adapter.feature_category(fid) == "server":
                 label += "  (서버)"
