@@ -53,6 +53,10 @@ import shutil
 import sys
 import threading
 import time
+if os.name == "nt":
+    import winsound   # 표준 라이브러리, Windows 전용 (배포 대상이 Windows 고정이라 조건부 임포트만 해둠)
+else:
+    winsound = None
 from collections import namedtuple
 from pathlib import Path
 
@@ -71,7 +75,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.4.1"
+VERSION = "v5.4.3"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -246,6 +250,20 @@ def resource_path(rel):
     return os.path.join(base, rel)
 
 ICON_FILE = "pongdu.ico"
+SOUND_CONNECT_FILE = "connection.wav"   # 게이트 → 메인 전환 시 재생 (직접 준비해서 레포 루트에 넣을 것)
+
+def play_connect_sound():
+    """게이트에서 메인화면으로 넘어갈 때 알림음. 파일이 없거나 재생 실패해도
+       연동 자체는 계속돼야 하므로 예외를 절대 밖으로 내보내지 않는다."""
+    if winsound is None:
+        return
+    path = resource_path(SOUND_CONNECT_FILE)
+    if not os.path.exists(path):
+        return
+    try:
+        winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+    except Exception:
+        pass
 
 def center_on_screen(win):
     """창을 현재 커서가 있는 모니터의 작업영역(작업표시줄 제외) 중앙에 배치.
@@ -2345,6 +2363,11 @@ class LauncherWindow(QWidget):
         self._live = False; self._connected = False; self._tier = False
         self._logging_in = False
         self._confirm_ready = False   # 로그인 확인됨 → 로그인 버튼이 '확인' 버튼으로 바뀐 상태
+        # 자동 연동시작: preset 없이 뜬 창(=로그인부터 시작한 최초 게이트)에서만 허용.
+        # preset이 있는 창은 MainWindow._back_to_gate()에서 '중지' 등으로 되돌아온 경우이므로,
+        # 체크리스트가 다시 전부 초록이 되어도 자동으로 넘어가지 않고 수동 클릭을 기다린다.
+        self._auto_advance = preset is None
+        self._auto_go_done = False    # 같은 창에서 자동 전환은 최초 1회만
         self.main_win = None
         self.cfg = load_config()       # MainWindow와 같은 config.json 공유
         self._game_dir = pz_game_dir() # PZ 설치 폴더 (최적화용, 수동지정 우선 / 못 찾으면 None)
@@ -2628,10 +2651,15 @@ class LauncherWindow(QWidget):
         self._refresh()
 
     def _refresh(self):
-        self.connect_btn.setEnabled(self._live and self._connected and self._tier)
+        ready = self._live and self._connected and self._tier
+        self.connect_btn.setEnabled(ready)
+        if ready and self._auto_advance and not self._auto_go_done:
+            self._auto_go_done = True   # 중복 트리거 방지 (poll 주기마다 _refresh 호출됨)
+            self._go_main()
 
     def _go_main(self):
         self.core.stop_poll()
+        play_connect_sound()
         preset = {
             "uuid": self._uuid, "name": self._name, "autostart": True,
             # 매핑을 여기서 계산하지 않는다 — core가 pongdu_tiers.txt에서 읽어들인

@@ -56,7 +56,7 @@ if errorlevel 1 (
 echo.
 
 echo [5/5] Building exe... ^(may take a few minutes^)
-py -m PyInstaller --onefile --noconsole --name PongDu --icon=pongdu.ico --add-data "pongdu.ico;." --add-data "opt_conf;opt_conf" --collect-all chzzkpy --collect-all ahttp_client gui.py
+py -m PyInstaller --onefile --noconsole --name PongDu --icon=pongdu.ico --add-data "pongdu.ico;." --add-data "connection.wav;." --add-data "opt_conf;opt_conf" --collect-all chzzkpy --collect-all ahttp_client gui.py
 if errorlevel 1 (
     echo.
     echo [!] Build failed. Copy the red error above and ask about it.
