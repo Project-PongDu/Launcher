@@ -65,9 +65,27 @@ if errorlevel 1 (
 )
 
 echo.
+echo [6/6] Generating version.json for the release...
+REM Reads VERSION from gui.py, hashes dist\PongDu.exe, and writes dist\version.json.
+REM Upload BOTH dist\PongDu.exe and dist\version.json as assets on the GitHub release,
+REM and tag the release with the same version string - the launcher's auto-updater
+REM fetches version.json from /releases/latest/download/ and verifies the sha256.
+py make_version.py
+if errorlevel 1 (
+    echo.
+    echo [!] Could not generate version.json. The exe is still fine - you can
+    echo     write dist\version.json by hand if you need to publish a release.
+)
+
+echo.
 echo ============================================
 echo   DONE!  Run  dist\PongDu.exe
 echo   ^(share that single file - others just double-click^)
+echo.
+echo   To publish an update, create a GitHub release
+echo   tagged with the VERSION above and attach BOTH:
+echo       dist\PongDu.exe
+echo       dist\version.json     ^(edit "notes" first^)
 echo ============================================
 pause
 exit /b 0

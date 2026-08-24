@@ -65,7 +65,7 @@ from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton, QComboBox,
     QTextEdit, QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QFrame,
-    QCheckBox, QStackedWidget, QMessageBox, QDialog, QScrollArea,
+    QCheckBox, QStackedWidget, QMessageBox, QDialog, QScrollArea, QProgressBar,
 )
 
 
@@ -75,7 +75,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.4.3"
+VERSION = "v5.5.0"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -90,6 +90,31 @@ AUTH_TIMEOUT        = 15.0    # 인증 서버 응답 대기 한도 (초)
 OAUTH_PORT          = 51925
 OAUTH_REDIRECT      = f"http://localhost:{OAUTH_PORT}/callback"
 LOGIN_TIMEOUT       = 300.0   # 브라우저 로그인 대기 한도 (초)
+
+# ── 자동 업데이트 ─────────────────────────────────────────────────────────────
+# 배포처는 GitHub Releases. 릴리즈마다 asset 두 개를 올린다:
+#     PongDu.exe      — 실행 파일 본체
+#     version.json    — 아래 UPDATE_MANIFEST_URL 이 가리키는 매니페스트
+# /releases/latest/download/<asset> 는 "최신 릴리즈의 그 asset" 으로 리다이렉트되는
+# 고정 URL 이라, GitHub REST API 를 안 거친다 → 시간당 60회 rate limit 이 적용되지 않음.
+#
+# version.json 형식:
+#     {
+#       "version":       "v5.5.0",     필수. 최신 버전.
+#       "url":           "https://github.com/.../download/v5.5.0/PongDu.exe",  필수.
+#       "sha256":        "abc123…",    필수. url 이 가리키는 exe 의 해시(소문자 hex).
+#       "min_supported": "v5.4.0",     선택. 이 버전 미만은 업데이트 강제(연기 불가).
+#       "notes":         "변경점…"      선택. 다이얼로그에 그대로 표시.
+#     }
+# 나중에 인증 서버(pongdu-auth)로 옮기고 싶으면 UPDATE_MANIFEST_URL 만 바꾸면 된다.
+UPDATE_MANIFEST_URL = "https://github.com/Project-PongDu/Launcher/releases/latest/download/version.json"
+UPDATE_TIMEOUT      = 10.0    # 매니페스트 조회 한도 (초). 이 시간만큼은 조용히 실패해도 무방
+UPDATE_DL_TIMEOUT   = 60.0    # exe 다운로드 소켓 타임아웃 (초)
+# 다운로드 허용 호스트. 리다이렉트를 따라간 뒤 최종 URL 도 이 목록으로 재검증한다
+# (매니페스트가 어떤 이유로든 오염돼도 임의 서버의 바이너리를 받아 실행하지 않도록).
+UPDATE_ALLOWED_HOSTS = ("github.com", "objects.githubusercontent.com",
+                        "release-assets.githubusercontent.com")
+IS_FROZEN = bool(getattr(sys, "frozen", False))   # PyInstaller exe 로 실행 중인가
 
 
 
@@ -2681,6 +2706,329 @@ class LauncherWindow(QWidget):
         super().closeEvent(e)
 
 
+# ── 자동 업데이트 ─────────────────────────────────────────────────────────────
+# 동작 원리(Windows):
+#   실행 중인 exe 는 "삭제"는 막히지만 "이름 변경"은 허용된다. 이 성질을 이용해
+#   배치 스크립트나 별도 부트스트래퍼 없이 자기 자신을 교체한다.
+#       1) 새 exe 를 PongDu.exe.new 로 받는다 (같은 폴더 — 볼륨이 달라지면 rename 이 복사가 됨)
+#       2) sha256 검증
+#       3) PongDu.exe → PongDu.exe.old      (실행 중이어도 성공)
+#       4) PongDu.exe.new → PongDu.exe
+#       5) 새 exe 를 --updated 로 띄우고 현재 프로세스 종료
+#       6) 새 프로세스가 시작할 때 .old 삭제 (그때는 파일 락이 풀려 있다)
+#   3~4 사이에서 죽으면 exe 가 사라지므로, 실패 시 즉시 롤백한다.
+
+def parse_version(s):
+    """'v5.4.3' → (5, 4, 3). 비교 불가능한 값이면 None."""
+    nums = re.findall(r"\d+", str(s or ""))
+    if not nums:
+        return None
+    return tuple(int(n) for n in nums[:4])
+
+
+def _update_url_ok(url) -> bool:
+    """https + 허용 호스트인지. 리다이렉트 최종 URL 도 이걸로 다시 검사한다."""
+    from urllib.parse import urlparse
+    try:
+        p = urlparse(url or "")
+    except ValueError:
+        return False
+    return p.scheme == "https" and (p.hostname or "") in UPDATE_ALLOWED_HOSTS
+
+
+def cleanup_old_exe():
+    """이전 업데이트가 남긴 PongDu.exe.old 제거. 실패해도 무시(다음 실행 때 다시 시도)."""
+    if not IS_FROZEN:
+        return
+    old = sys.executable + ".old"
+    for _ in range(10):
+        try:
+            os.remove(old)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            time.sleep(0.3)   # 직전 프로세스가 아직 완전히 안 죽었을 수 있다
+
+
+class UpdateWorker(QObject):
+    """매니페스트 조회 + exe 다운로드/교체를 백그라운드 스레드에서 수행.
+
+       조회는 런처 부팅을 막지 않는다(게이트는 정상적으로 뜨고, 결과가 오면
+       그 위에 다이얼로그가 모달로 올라온다). 조회 실패는 조용히 무시 —
+       업데이트 서버가 죽었다고 방송 준비가 막히면 안 되므로."""
+
+    found     = pyqtSignal(dict)        # 새 버전 있음 → 매니페스트 dict
+    progress  = pyqtSignal(int, int)    # 받은 바이트, 전체 바이트(모르면 0)
+    finished  = pyqtSignal(str)         # "" = 성공(재실행 대기), 그 외 = 에러 메시지
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    # --- 조회 ---
+    def check_async(self):
+        threading.Thread(target=self._check, daemon=True).start()
+
+    def _check(self):
+        try:
+            man = self._fetch_manifest()
+        except Exception as e:
+            print("[update] check failed: %s: %s" % (type(e).__name__, e))
+            return
+        cur = parse_version(VERSION)
+        new = parse_version(man.get("version"))
+        if not cur or not new or new <= cur:
+            return
+        if not _update_url_ok(man.get("url")) or not man.get("sha256"):
+            print("[update] manifest rejected (bad url or missing sha256)")
+            return
+        floor = parse_version(man.get("min_supported"))
+        man["_forced"] = bool(floor and cur < floor)
+        self.found.emit(man)
+
+    def _fetch_manifest(self):
+        import urllib.request
+        req = urllib.request.Request(
+            UPDATE_MANIFEST_URL,
+            headers={"User-Agent": "PongDuLauncher/" + VERSION,
+                     "Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT) as r:
+            raw = r.read(64 * 1024)
+        return json.loads(raw.decode("utf-8"))
+
+    # --- 적용 ---
+    def apply_async(self, man):
+        threading.Thread(target=self._apply, args=(man,), daemon=True).start()
+
+    def _apply(self, man):
+        if not IS_FROZEN:
+            self.finished.emit("개발 모드(python gui.py)에서는 자동 업데이트를 쓸 수 없습니다.")
+            return
+        exe = sys.executable
+        tmp = exe + ".new"
+        old = exe + ".old"
+        try:
+            self._download(man["url"], tmp, man["sha256"])
+        except Exception as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            if self._cancel:
+                self.finished.emit("취소됨")
+            else:
+                self.finished.emit("다운로드 실패: %s: %s" % (type(e).__name__, e))
+            return
+
+        # 교체 (여기서부터는 짧고, 실패하면 즉시 되돌린다)
+        try:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+            os.replace(exe, old)          # 실행 중이어도 rename 은 허용됨
+        except OSError as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            self.finished.emit(
+                "기존 파일을 교체할 수 없습니다 (%s).\n"
+                "런처를 바탕화면 등 쓰기 가능한 폴더로 옮긴 뒤 다시 시도하세요." % e)
+            return
+        try:
+            os.replace(tmp, exe)
+        except OSError as e:
+            os.replace(old, exe)          # 롤백 — exe 가 사라진 채로 끝나면 안 된다
+            self.finished.emit("교체 실패, 원래 버전으로 되돌렸습니다: %s" % e)
+            return
+
+        self.finished.emit("")
+
+    def _download(self, url, dest, want_sha):
+        import hashlib
+        import urllib.request
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "PongDuLauncher/" + VERSION})
+        h = hashlib.sha256()
+        got = 0
+        with urllib.request.urlopen(req, timeout=UPDATE_DL_TIMEOUT) as r:
+            # 리다이렉트를 따라간 최종 URL 재검증
+            final = getattr(r, "url", None) or url
+            if not _update_url_ok(final):
+                raise ValueError("허용되지 않은 다운로드 위치: %s" % final)
+            try:
+                total = int(r.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                total = 0
+            self.progress.emit(0, total)
+            with open(dest, "wb") as f:
+                while True:
+                    if self._cancel:
+                        raise IOError("취소됨")
+                    chunk = r.read(256 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    h.update(chunk)
+                    got += len(chunk)
+                    self.progress.emit(got, total)
+        if total and got != total:
+            raise IOError("전송이 중간에 끊겼습니다 (%d/%d bytes)" % (got, total))
+        real = h.hexdigest()
+        if real.lower() != str(want_sha).strip().lower():
+            raise ValueError("해시 불일치 — 파일이 손상됐거나 변조됐습니다")
+
+
+class UpdateDialog(QDialog):
+    """새 버전 안내 → [지금 업데이트] 시 그 자리에서 받아 교체하고 재실행."""
+
+    def __init__(self, man, parent=None):
+        super().__init__(parent)
+        self.man = man
+        self.forced = bool(man.get("_forced"))
+        self.worker = UpdateWorker(self)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_finished)
+        self._working = False
+        self.setWindowTitle("퐁듀 런처 업데이트")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        ico = resource_path(ICON_FILE)
+        if os.path.exists(ico):
+            self.setWindowIcon(QIcon(ico))
+        self.setFixedWidth(440)
+        self._build()
+        self.setStyleSheet(DARK_QSS)
+
+    def _build(self):
+        v = QVBoxLayout(self)
+        v.setContentsMargins(20, 18, 20, 18); v.setSpacing(10)
+
+        title = QLabel("새 버전이 있습니다"); title.setObjectName("sect")
+        v.addWidget(title)
+
+        cur_new = QLabel("%s  →  %s" % (VERSION, self.man.get("version", "?")))
+        cur_new.setObjectName("linkok")
+        v.addWidget(cur_new)
+
+        notes = (self.man.get("notes") or "").strip()
+        if notes:
+            box = QTextEdit(); box.setReadOnly(True); box.setPlainText(notes)
+            box.setFixedHeight(110)
+            v.addWidget(box)
+
+        if self.forced:
+            warn = QLabel("이 버전은 더 이상 정상 동작하지 않습니다. 업데이트가 필요합니다.")
+            warn.setObjectName("err"); warn.setWordWrap(True)
+            v.addWidget(warn)
+
+        self.bar = QProgressBar(); self.bar.setRange(0, 100); self.bar.setValue(0)
+        self.bar.hide()
+        v.addWidget(self.bar)
+
+        self.status = QLabel(""); self.status.setObjectName("muted"); self.status.setWordWrap(True)
+        v.addWidget(self.status)
+
+        row = QHBoxLayout(); row.addStretch(1)
+        self.later_btn = QPushButton("종료" if self.forced else "나중에")
+        self.later_btn.clicked.connect(self._later_click)
+        row.addWidget(self.later_btn)
+        self.go_btn = QPushButton("지금 업데이트"); self.go_btn.setObjectName("verify")
+        self.go_btn.clicked.connect(self._go_click)
+        row.addWidget(self.go_btn)
+        v.addLayout(row)
+
+    # --- 동작 ---
+    def _later_click(self):
+        if self._working:
+            self.worker.cancel()
+            self.status.setText("취소하는 중…")
+            return
+        if self.forced:
+            self.reject()
+            QApplication.quit()
+            return
+        self.reject()
+
+    def _go_click(self):
+        if self._working:
+            return
+        self._working = True
+        self.go_btn.setEnabled(False)
+        self.later_btn.setText("취소")
+        self.bar.show(); self.bar.setValue(0)
+        self.status.setText("다운로드 중…")
+        self.setWindowFlag(Qt.WindowCloseButtonHint, False)
+        self.show()          # setWindowFlag 후 다시 표시 필요
+        self.worker.apply_async(self.man)
+
+    def _on_progress(self, got, total):
+        if total > 0:
+            self.bar.setRange(0, 100)
+            self.bar.setValue(int(got * 100 / total))
+            self.status.setText("다운로드 중…  %.1f / %.1f MB"
+                                % (got / 1048576.0, total / 1048576.0))
+        else:
+            self.bar.setRange(0, 0)   # 전체 크기를 모르면 무한 진행바
+            self.status.setText("다운로드 중…  %.1f MB" % (got / 1048576.0,))
+
+    def _on_finished(self, err):
+        self._working = False
+        if err:
+            self.bar.hide()
+            self.go_btn.setEnabled(True)
+            self.later_btn.setText("종료" if self.forced else "나중에")
+            self.setWindowFlag(Qt.WindowCloseButtonHint, True)
+            self.show()
+            self.status.setText(err)
+            return
+        self.bar.setRange(0, 100); self.bar.setValue(100)
+        self.status.setText("업데이트 완료 — 런처를 다시 시작합니다.")
+        self.later_btn.setEnabled(False)
+        QTimer.singleShot(600, self._restart)
+
+    def _restart(self):
+        """새 exe 를 띄우고 현재 프로세스를 끝낸다.
+
+           단일 인스턴스 락(QSharedMemory)은 이 프로세스가 죽어야 풀리므로,
+           새 프로세스에 --updated 를 넘겨 락 획득을 잠깐 재시도하게 한다."""
+        import subprocess
+        try:
+            flags = 0
+            if os.name == "nt":
+                flags = 0x00000008 | 0x08000000    # DETACHED_PROCESS | CREATE_NO_WINDOW
+            subprocess.Popen([sys.executable, "--updated"],
+                             cwd=os.path.dirname(sys.executable) or None,
+                             close_fds=True, creationflags=flags)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "재시작 실패",
+                "업데이트는 끝났지만 자동 재시작에 실패했습니다 (%s).\n"
+                "런처를 직접 다시 실행해주세요." % e)
+        self.accept()
+        QApplication.quit()
+        os._exit(0)      # Qt 이벤트루프/백그라운드 스레드가 종료를 붙잡지 않게 즉시 탈출
+
+
+def acquire_single_instance(retry: bool):
+    """단일 인스턴스 락. retry=True(업데이트 직후 재실행)면 직전 프로세스가
+       완전히 죽을 때까지 잠깐 기다린다."""
+    mem = QSharedMemory("PuppetChzzkLauncher_SingleInstance")
+    if mem.create(1):
+        return mem
+    if not retry:
+        return None
+    for _ in range(25):          # 최대 5초
+        time.sleep(0.2)
+        if mem.create(1):
+            return mem
+    return None
+
+
 def main():
     # 승격 헬퍼 진입점 — 단일 인스턴스 락보다 먼저 처리해야 함
     # (본체가 떠 있는 상태에서 관리자 권한으로 재실행되는 프로세스라 락을 잡으면 안 됨)
@@ -2688,10 +3036,13 @@ def main():
         _optimizer_cli(sys.argv)
         return
 
+    # 직전 업데이트가 남긴 .old 정리 (락보다 먼저 — 이 시점엔 구 프로세스가 이미 죽어 있다)
+    cleanup_old_exe()
+
     app = QApplication(sys.argv)
 
-    shared_mem = QSharedMemory("PuppetChzzkLauncher_SingleInstance")
-    if not shared_mem.create(1):
+    shared_mem = acquire_single_instance(retry="--updated" in sys.argv)
+    if shared_mem is None:
         from PyQt5.QtWidgets import QMessageBox
         QMessageBox.warning(None, "중복 실행", "이미 실행 중입니다.")
         sys.exit(0)
@@ -2700,6 +3051,14 @@ def main():
     if os.path.exists(ico):
         app.setWindowIcon(QIcon(ico))
     win = LauncherWindow(); center_on_screen(win); win.show()
+
+    # 업데이트 확인 — 부팅을 막지 않는다. 조회는 백그라운드로 돌고,
+    # 새 버전이 있을 때만 게이트 위에 다이얼로그가 모달로 올라온다.
+    updater = UpdateWorker(app)
+    updater.found.connect(lambda man: UpdateDialog(man, win).exec_())
+    if IS_FROZEN:
+        QTimer.singleShot(800, updater.check_async)
+
     sys.exit(app.exec_())
 
 

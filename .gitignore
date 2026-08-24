@@ -1,2 +1,15 @@
 /build
 *.spec
+
+# 빌드 산출물은 git 이 아니라 GitHub Releases 로 배포한다.
+# PyInstaller onefile exe 는 내부가 이미 압축돼 있어 git 델타 압축이 먹지 않으므로,
+# 커밋할 때마다 히스토리에 40MB 이상이 영구히 쌓인다(되돌리려면 히스토리 재작성뿐).
+# 릴리즈 asset 은 히스토리에 들어가지 않고 clone 시 딸려오지도 않는다.
+/dist
+
+# 자동 업데이터가 자기 교체 중에 만드는 임시 파일 (정상 종료 시 사라짐)
+*.exe.new
+*.exe.old
+
+__pycache__/
+*.pyc
