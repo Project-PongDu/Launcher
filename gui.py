@@ -75,7 +75,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.5.0"
+VERSION = "v5.6.0"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -180,13 +180,46 @@ def _alt_config_path(cfg: dict):
         return None
     return p
 
+# load_config()는 3초 폴링(pz_connected / 티어 감시 / force_online 재확인)에서 간접적으로
+# 계속 불린다. 매번 JSON 을 읽고 파싱하면 PZ 가 청크를 스트리밍하는 같은 디스크에 초당
+# 수 회의 read 를 얹는 꼴이라, 파일 내용이 안 바뀐 동안은 파싱 결과를 재사용한다.
+# 무효화 기준은 (mtime_ns, size) — 외부 편집(직접 json 수정)도 그대로 감지된다.
+_CFG_CACHE = None          # (sig, dict) | None
+_CFG_SIG_MISS = object()   # 파일 없음을 표현하는 sentinel
+
+def _file_sig(p: Path):
+    try:
+        st = p.stat()
+    except OSError:
+        return _CFG_SIG_MISS
+    return (st.st_mtime_ns, st.st_size)
+
+def invalidate_config_cache():
+    global _CFG_CACHE
+    _CFG_CACHE = None
+
 def load_config() -> dict:
     """자동탐지 폴더의 설정을 기본값으로 읽고, 수동 지정 폴더에 설정 파일이 따로 있으면
-       그 값으로 덮어쓴다 (수동 지정 폴더 우선)."""
+       그 값으로 덮어쓴다 (수동 지정 폴더 우선).
+       파일이 안 바뀌었으면 캐시된 파싱 결과의 사본을 돌려준다 (값은 전부 스칼라라 얕은
+       복사로 충분하며, 호출부가 반환값을 수정해도 캐시가 오염되지 않는다)."""
+    global _CFG_CACHE
+    base_sig = _file_sig(CONFIG_PATH)
+
+    if _CFG_CACHE is not None:
+        sig, cached = _CFG_CACHE
+        # alt 경로는 base 를 읽어야 알 수 있으므로, 캐시에 기록해 둔 경로로 검사한다.
+        alt_path, alt_sig = sig[1], sig[2]
+        if sig[0] == base_sig and (alt_path is None or _file_sig(alt_path) == alt_sig):
+            return dict(cached)
+
     cfg = _read_json(CONFIG_PATH)
     alt = _alt_config_path(cfg)
+    alt_sig = None
     if alt is not None:
+        alt_sig = _file_sig(alt)
         cfg.update(_read_json(alt))
+    _CFG_CACHE = ((base_sig, alt, alt_sig), dict(cfg))
     return cfg
 
 def save_config(d: dict):
@@ -202,6 +235,7 @@ def save_config(d: dict):
             p.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError:
             pass
+    invalidate_config_cache()   # mtime 해상도에 기대지 않고 즉시 무효화
 
 # 관리자/테스트 모드는 실행 시점에 1회 반영한다. (로그인 경로를 안 타고 게이트로
 # 되돌아오는 흐름에서도 항상 적용되도록 _gate_pass 갱신에만 의존하지 않는다.)
@@ -289,6 +323,27 @@ def play_connect_sound():
         winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
     except Exception:
         pass
+
+# ── 창 전환 ──────────────────────────────────────────────────────────────────
+# 게이트 ↔ 메인은 서로를 속성으로 붙들고(close 만 호출) 있었기 때문에,
+# gate1 → main1 → gate2 → main2 … 로 왕복할 때마다 이전 창의 위젯 트리가 하나도
+# 해제되지 않고 체인으로 계속 살아 있었다 (Qt 의 close() 는 숨기기일 뿐이고,
+# WA_DeleteOnClose 가 없으면 파괴되지 않는다). 백그라운드 스레드는 각 창의 closeEvent
+# 에서 이미 정리되지만 위젯 자체가 남아, PZ 재접속을 반복하는 긴 방송에서 누적됐다.
+# 현재 창은 이 전역이 하나만 붙들고, 이전 창은 닫은 뒤 삭제를 예약한다.
+_ACTIVE_WINDOW = None
+
+def swap_window(new_win, old_win=None):
+    """new_win 을 화면 중앙에 띄우고, old_win 은 닫고 해제 예약한다.
+       deleteLater 는 이벤트루프로 미루므로, 시그널 핸들러 안에서 호출해도 안전하다."""
+    global _ACTIVE_WINDOW
+    _ACTIVE_WINDOW = new_win
+    center_on_screen(new_win)
+    new_win.show()
+    if old_win is not None:
+        old_win.close()
+        old_win.deleteLater()
+
 
 def center_on_screen(win):
     """창을 현재 커서가 있는 모니터의 작업영역(작업표시줄 제외) 중앙에 배치.
@@ -909,12 +964,10 @@ def pz_running_real() -> bool:
         return False
 
 
-def pz_running() -> bool:
-    """Project Zomboid 클라이언트가 실행 중인지 확인 (감시용).
-    테스트 모드(FORCE_ONLINE)에서는 게임 없이도 연동을 유지해야 하므로 실행 중으로 간주한다."""
-    if FORCE_ONLINE:
-        return True
-    return pz_running_real()
+# 참고: FORCE_ONLINE 을 존중하던 pz_running() 래퍼는 감시 폴링(MainGuard) 전용이었고,
+# 그 폴링에서 프로세스 검사를 제거하면서 호출부가 전부 사라져 함께 삭제했다.
+# 최적화 창의 파일 교체 안전 체크는 테스트 모드와 무관하게 실제 프로세스를 봐야 하므로
+# 예전부터 pz_running_real() 을 직접 쓴다.
 
 
 def pz_connected() -> bool:
@@ -1903,6 +1956,9 @@ class MainWindow(QWidget):
         # 로그
         root.addWidget(self._muted("실시간 도네 로그"))
         self.log = QTextEdit(); self.log.setReadOnly(True); self.log.setMinimumHeight(140)
+        # 상한이 없으면 장시간 방송에서 후원 로그가 무한히 쌓여 문서가 커지고, 새 줄이 붙을
+        # 때마다 리레이아웃 비용이 함께 커진다. 오래된 줄은 자동으로 버린다.
+        self.log.document().setMaximumBlockCount(400)
         root.addWidget(self.log, 1)
 
         self.setStyleSheet(DARK_QSS)
@@ -2020,6 +2076,7 @@ class MainWindow(QWidget):
     def closeEvent(self, e):
         if self._tier_timer is not None:
             self._tier_timer.stop()
+        self._kill_guard()          # 창을 X로 닫는 경로에선 _back_to_gate 를 안 타므로 여기서도 정리
         if self.worker:
             self.worker.stop()
         super().closeEvent(e)
@@ -2091,10 +2148,7 @@ class MainWindow(QWidget):
         preset = None
         if not (warn_auth or warn_wl) and self.preset.get("uuid"):
             preset = {"uuid": self.preset["uuid"], "name": self.preset.get("name", "")}
-        self._gate = LauncherWindow(preset=preset)
-        center_on_screen(self._gate)
-        self._gate.show()
-        self.close()
+        swap_window(LauncherWindow(preset=preset), self)
 
     def _pz_to_gate(self):
         if self._returning:
@@ -2317,7 +2371,6 @@ class MainGuard(QObject):
         self.uuid = uuid
         self.loop = None
         self._polling = False
-        self._pz_misses = 0
         self._conn_misses = 0
         self._ready = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -2336,18 +2389,12 @@ class MainGuard(QObject):
 
     async def _poll(self):
         while self._polling:
-            try:
-                running = await self.loop.run_in_executor(None, pz_running)
-            except Exception:
-                running = False
-            if running:
-                self._pz_misses = 0
-            else:
-                self._pz_misses += 1               # 일시적 오탐 방지로 2회 연속 미감지 시 복귀
-                if self._pz_misses >= 2:
-                    self._polling = False
-                    self.pz_lost.emit()
-                    break
+            # PZ 프로세스 존재 여부는 따로 확인하지 않는다. 게이트 폴링(LauncherCore._poll)에서
+            # 같은 이유로 이미 제거한 검사이며, pz_connected() 의 heartbeat 가 10초 타임아웃으로
+            # 끊기면 프로세스가 죽은 경우도 아래 _conn_misses 에서 똑같이 잡힌다.
+            # tasklist 는 시스템 전체 프로세스를 열거하는 무거운 명령인데다, 3초마다 새 프로세스를
+            # 띄우는 것 자체가 백신 실시간 감시 훅에 걸려 게임 프레임에 스터터를 유발한다.
+            # (배포 exe 에는 psutil 이 포함되지 않아 항상 tasklist 폴백을 탔다.)
             try:
                 conn = await self.loop.run_in_executor(None, pz_connected)
             except Exception:
@@ -2393,7 +2440,6 @@ class LauncherWindow(QWidget):
         # 체크리스트가 다시 전부 초록이 되어도 자동으로 넘어가지 않고 수동 클릭을 기다린다.
         self._auto_advance = preset is None
         self._auto_go_done = False    # 같은 창에서 자동 전환은 최초 1회만
-        self.main_win = None
         self.cfg = load_config()       # MainWindow와 같은 config.json 공유
         self._game_dir = pz_game_dir() # PZ 설치 폴더 (최적화용, 수동지정 우선 / 못 찾으면 None)
         self._build()
@@ -2693,10 +2739,7 @@ class LauncherWindow(QWidget):
             "server_name": self.core.server_name,
             "server_ts": self.core.server_ts,
         }
-        self.main_win = MainWindow(preset=preset)
-        center_on_screen(self.main_win)
-        self.main_win.show()
-        self.close()
+        swap_window(MainWindow(preset=preset), self)
 
     def closeEvent(self, e):
         try:
@@ -3050,12 +3093,14 @@ def main():
     ico = resource_path(ICON_FILE)
     if os.path.exists(ico):
         app.setWindowIcon(QIcon(ico))
-    win = LauncherWindow(); center_on_screen(win); win.show()
+    swap_window(LauncherWindow())   # 최초 창도 _ACTIVE_WINDOW 가 붙들게 한다
 
     # 업데이트 확인 — 부팅을 막지 않는다. 조회는 백그라운드로 돌고,
     # 새 버전이 있을 때만 게이트 위에 다이얼로그가 모달로 올라온다.
+    # 부모는 호출 시점의 현재 창으로 잡는다 — 최초 게이트를 캡처해 두면
+    # 그 사이 창이 교체됐을 때 이미 삭제된 객체를 참조하게 된다.
     updater = UpdateWorker(app)
-    updater.found.connect(lambda man: UpdateDialog(man, win).exec_())
+    updater.found.connect(lambda man: UpdateDialog(man, _ACTIVE_WINDOW).exec_())
     if IS_FROZEN:
         QTimer.singleShot(800, updater.check_async)
 
