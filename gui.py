@@ -75,7 +75,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.6.0"
+VERSION = "v5.6.1"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -2803,6 +2803,7 @@ class UpdateWorker(QObject):
 
     found     = pyqtSignal(dict)        # 새 버전 있음 → 매니페스트 dict
     progress  = pyqtSignal(int, int)    # 받은 바이트, 전체 바이트(모르면 0)
+    stage     = pyqtSignal(str)         # 현재 단계 문구 (다운로드 이후 구간용)
     finished  = pyqtSignal(str)         # "" = 성공(재실행 대기), 그 외 = 에러 메시지
 
     def __init__(self, parent=None):
@@ -2868,6 +2869,10 @@ class UpdateWorker(QObject):
             return
 
         # 교체 (여기서부터는 짧고, 실패하면 즉시 되돌린다)
+        # 다만 백신 실시간 감시가 방금 받은 exe 를 스캔하면서 잠깐 잠그면 os.replace 가
+        # 수 초 블로킹될 수 있다. 그동안 "다운로드 중…" 이 그대로 떠 있으면 멈춘 것처럼
+        # 보이므로 단계를 명시한다.
+        self.stage.emit("설치 중… (백신 검사 중이면 잠시 걸릴 수 있습니다)")
         try:
             try:
                 os.remove(old)
@@ -2936,6 +2941,7 @@ class UpdateDialog(QDialog):
         self.forced = bool(man.get("_forced"))
         self.worker = UpdateWorker(self)
         self.worker.progress.connect(self._on_progress)
+        self.worker.stage.connect(self._on_stage)
         self.worker.finished.connect(self._on_finished)
         self._working = False
         self.setWindowTitle("퐁듀 런처 업데이트")
@@ -2986,16 +2992,31 @@ class UpdateDialog(QDialog):
         v.addLayout(row)
 
     # --- 동작 ---
-    def _later_click(self):
+    def _close_guarded(self) -> bool:
+        """닫기 시도를 받아 실제로 닫아도 되는지 판정. 작업 중이면 취소로 전환하고 False."""
         if self._working:
             self.worker.cancel()
             self.status.setText("취소하는 중…")
+            return False
+        return True
+
+    def closeEvent(self, e):
+        """X 버튼 / 시스템 메뉴 '닫기' 경로."""
+        if self._close_guarded():
+            super().closeEvent(e)
+        else:
+            e.ignore()
+
+    def reject(self):
+        """ESC 키와 '나중에/취소' 버튼이 함께 타는 경로."""
+        if not self._close_guarded():
             return
+        super().reject()
         if self.forced:
-            self.reject()
             QApplication.quit()
-            return
-        self.reject()
+
+    def _later_click(self):
+        self.reject()   # 작업 중이면 취소로 전환, 아니면 닫기 (강제 버전이면 종료까지)
 
     def _go_click(self):
         if self._working:
@@ -3005,8 +3026,12 @@ class UpdateDialog(QDialog):
         self.later_btn.setText("취소")
         self.bar.show(); self.bar.setValue(0)
         self.status.setText("다운로드 중…")
-        self.setWindowFlag(Qt.WindowCloseButtonHint, False)
-        self.show()          # setWindowFlag 후 다시 표시 필요
+        # 작업 중 닫기 차단은 closeEvent/reject 가드가 담당한다.
+        # 예전엔 setWindowFlag(WindowCloseButtonHint, False) 로 X 버튼을 없앴는데,
+        # 이 호출은 내부적으로 setParent(parent, flags) 를 타면서 네이티브 윈도우 핸들을
+        # 파괴·재생성한다. exec_() 모달 루프 안에서 그러면 다이얼로그가 숨은 채로 살아남아
+        # (뒤이은 show() 로도 복구 안 됨) 모달만 남아 부모 창이 영구히 잠겼다.
+        # 증상: 게이트가 보이는데 어딜 눌러도 경고음만 나고, 창 캡처에도 안 잡힘.
         self.worker.apply_async(self.man)
 
     def _on_progress(self, got, total):
@@ -3019,14 +3044,19 @@ class UpdateDialog(QDialog):
             self.bar.setRange(0, 0)   # 전체 크기를 모르면 무한 진행바
             self.status.setText("다운로드 중…  %.1f MB" % (got / 1048576.0,))
 
+    def _on_stage(self, text):
+        self.bar.setRange(0, 0)      # 남은 시간을 알 수 없는 구간 → 무한 진행바
+        self.status.setText(text)
+        self.later_btn.setEnabled(False)   # 파일 교체 중엔 취소해도 되돌릴 게 없다
+
     def _on_finished(self, err):
         self._working = False
         if err:
             self.bar.hide()
+            self.bar.setRange(0, 100)
             self.go_btn.setEnabled(True)
+            self.later_btn.setEnabled(True)
             self.later_btn.setText("종료" if self.forced else "나중에")
-            self.setWindowFlag(Qt.WindowCloseButtonHint, True)
-            self.show()
             self.status.setText(err)
             return
         self.bar.setRange(0, 100); self.bar.setValue(100)
