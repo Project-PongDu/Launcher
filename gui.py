@@ -75,7 +75,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.7.0"
+VERSION = "v5.7.1"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -2092,7 +2092,7 @@ class MainWindow(QWidget):
         if self.worker is None:
             self._start()
         else:
-            self._back_to_gate()        # 중지 누르면 완전 초기 게이트로 복귀
+            self._back_to_gate(manual=True)   # 중지 누르면 완전 초기 게이트로 복귀 (자동 재진입 없음)
 
     def _save_token(self, tok):
         """워커 스레드에서 호출됨 — refresh token 갱신 즉시 저장 (Qt 객체 접근 금지)."""
@@ -2133,10 +2133,13 @@ class MainWindow(QWidget):
         self._on_status("대기 중", "#5f5e5a")
         self._log("중지됨.")
 
-    def _back_to_gate(self, warn_auth=False, warn_wl=False):
+    def _back_to_gate(self, warn_auth=False, warn_wl=False, manual=False):
         """워커 정리하고 게이트 창으로 돌아간다 (중지 / PZ 종료 / 로그인 만료 / 미등재 공통).
            warn_auth=True 면 저장 토큰을 지우고 경고창 후 로그인 화면부터 다시 시작.
            warn_wl=True 면 미등재 경고 후 게이트로 (게이트 자동 로그인이 미등재 화면을 띄운다).
+           manual=True (스트리머가 직접 '중지'를 누른 경우) 면 새 게이트에서 자동 연동시작을
+           끈다. 그 외 경로(PZ 종료 / 로그인 만료 / 미등재)는 사용자가 의도한 중단이 아니므로
+           체크리스트가 다시 전부 초록이 되면 최초 실행 때처럼 자동으로 연동을 시작한다.
            _returning 을 먼저 세워 경고창 중 중복 트리거를 막는다."""
         if self._returning:
             return
@@ -2154,7 +2157,7 @@ class MainWindow(QWidget):
         preset = None
         if not (warn_auth or warn_wl) and self.preset.get("uuid"):
             preset = {"uuid": self.preset["uuid"], "name": self.preset.get("name", "")}
-        swap_window(LauncherWindow(preset=preset), self)
+        swap_window(LauncherWindow(preset=preset, auto_advance=not manual), self)
 
     def _pz_to_gate(self):
         if self._returning:
@@ -2422,7 +2425,7 @@ class MainGuard(QObject):
 
 
 class LauncherWindow(QWidget):
-    def __init__(self, preset=None):
+    def __init__(self, preset=None, auto_advance=True):
         super().__init__()
         self.setWindowTitle("PongDu Launcher  "+VERSION)
         ico = resource_path(ICON_FILE)
@@ -2441,10 +2444,13 @@ class LauncherWindow(QWidget):
         self._live = False; self._connected = False; self._tier = False
         self._logging_in = False
         self._confirm_ready = False   # 로그인 확인됨 → 로그인 버튼이 '확인' 버튼으로 바뀐 상태
-        # 자동 연동시작: preset 없이 뜬 창(=로그인부터 시작한 최초 게이트)에서만 허용.
-        # preset이 있는 창은 MainWindow._back_to_gate()에서 '중지' 등으로 되돌아온 경우이므로,
-        # 체크리스트가 다시 전부 초록이 되어도 자동으로 넘어가지 않고 수동 클릭을 기다린다.
-        self._auto_advance = preset is None
+        # 자동 연동시작: 체크리스트 4줄이 전부 초록이 되면 '연동 시작'을 누른 것과 동일하게
+        # 메인으로 넘어간다. 최초 실행은 물론이고 PZ 종료 / 로그인 만료 / 미등재로 게이트에
+        # 되돌아온 경우도 포함된다 — 스트리머가 게임 안에 있어 런처를 못 보는 상황에서
+        # 재접속만으로 연동이 살아나야 하기 때문.
+        # 유일한 예외는 메인화면에서 '중지'를 직접 누른 경우로, MainWindow._back_to_gate(
+        # manual=True)가 auto_advance=False 를 넘겨 수동 클릭을 기다리게 한다.
+        self._auto_advance = bool(auto_advance)
         self._auto_go_done = False    # 같은 창에서 자동 전환은 최초 1회만
         self.cfg = load_config()       # MainWindow와 같은 config.json 공유
         self._game_dir = pz_game_dir() # PZ 설치 폴더 (최적화용, 수동지정 우선 / 못 찾으면 None)
