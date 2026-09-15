@@ -75,7 +75,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.7.1"
+VERSION = "v5.8.0"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -867,9 +867,29 @@ class ZomboidAdapter(GameAdapter):
     # 카테고리는 featureId 의 고정 속성이라 프리셋 파일 형식({amount: featureId})은 그대로다.
     SERVER_FEATURES = {"medical_box", "blood_moon", "horde_night"}
 
+    # 애드온 기능 (서버 전용 커스텀 모드가 PongDuAddon 으로 등록한 것).
+    # 퐁듀 모드가 pongdu_tiers.txt 의 "addons" 에 실어 보내면 load_server_tiers()가
+    # 매번 통째로 교체한다. 내장 FEATURES 와 겹치는 id 는 받지 않는다(내장 우선).
+    ADDON_FEATURES = {}         # featureId -> 표시 라벨
+    ADDON_SERVER_FEATURES = set()
+
     @classmethod
     def feature_category(cls, fid):
-        return "server" if fid in cls.SERVER_FEATURES else "personal"
+        if fid in cls.SERVER_FEATURES or fid in cls.ADDON_SERVER_FEATURES:
+            return "server"
+        return "personal"
+
+    @classmethod
+    def is_known_feature(cls, fid):
+        return fid in cls.FEATURES or fid in cls.ADDON_FEATURES
+
+    @classmethod
+    def feature_label(cls, fid, default=None):
+        if fid in cls.FEATURES:
+            return cls.FEATURES[fid]
+        if fid in cls.ADDON_FEATURES:
+            return cls.ADDON_FEATURES[fid]
+        return fid if default is None else default
 
     # 금액(원) -> featureId. 유저가 GUI에서 자유롭게 재배정 가능(reward_tiers).
     # 이 값은 config.json에 reward_tiers가 없을 때(첫 실행/구버전 마이그레이션)의 기본값.
@@ -1000,7 +1020,34 @@ def pz_connected() -> bool:
 
 # ── 서버 리워드 티어 (모드가 Zomboid/Lua/pongdu_tiers.txt 로 게시한 것을 그대로 읽음) ──
 # 매핑을 "계산"하는 게 아니라 모드 샌박(Tier_<featureId>)이 이미 정해준 값을 읽어들이기만
-# 한다. FEATURES 화이트리스트 검증만 방어적으로 거친다 — 판단 로직은 없음.
+# 한다. FEATURES(+ 애드온 목록 "addons") 화이트리스트 검증만 방어적으로 거친다 — 판단 로직은 없음.
+
+_ADDON_ID_RE = re.compile(r"^[a-z0-9_]+$")
+
+
+def _apply_addon_features(addons):
+    """pongdu_tiers.txt 의 "addons" -> ZomboidAdapter.ADDON_* 통째 교체.
+       형식: {"<featureId>": {"label": "<표시명>", "category": "personal"|"server"}}
+       구버전 모드(addons 키 없음)면 빈 목록으로 초기화된다."""
+    features, server = {}, set()
+    if isinstance(addons, dict):
+        for fid, meta in addons.items():
+            if not isinstance(fid, str) or not _ADDON_ID_RE.match(fid):
+                continue
+            if fid in ZomboidAdapter.FEATURES:
+                continue    # 내장 기능 우선 (모드 쪽에서도 이미 걸러서 보낸다)
+            if not isinstance(meta, dict):
+                continue
+            label = meta.get("label")
+            if not isinstance(label, str) or not label.strip():
+                label = fid
+            features[fid] = label.strip()
+            if meta.get("category") == "server":
+                server.add(fid)
+    # 워커 스레드(run_in_executor)에서 호출되므로 부분 수정 대신 통째로 바꿔 끼운다.
+    ZomboidAdapter.ADDON_FEATURES = features
+    ZomboidAdapter.ADDON_SERVER_FEATURES = server
+
 
 def load_server_tiers():
     """pongdu_tiers.txt -> (reward_tiers dict, server_name, ts) | (None, None, None).
@@ -1012,6 +1059,7 @@ def load_server_tiers():
         data = json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return None, None, None
+    _apply_addon_features(data.get("addons"))
     tiers = data.get("tiers")
     if not isinstance(tiers, dict) or not tiers:
         return None, None, None
@@ -1021,7 +1069,7 @@ def load_server_tiers():
             amt = int(k)
         except (TypeError, ValueError):
             continue
-        if amt > 0 and v in ZomboidAdapter.FEATURES:
+        if amt > 0 and ZomboidAdapter.is_known_feature(v):
             loaded[amt] = v
     if not loaded:
         return None, None, None
@@ -1688,7 +1736,7 @@ class RewardPresetDialog(QDialog):
             items = sorted((amt, fid) for amt, fid in self.tiers.items()
                            if ZomboidAdapter.feature_category(fid) == cat)
             for i, (amt, fid) in enumerate(items):
-                label = ZomboidAdapter.FEATURES.get(fid, fid)
+                label = ZomboidAdapter.feature_label(fid)
                 l = QLabel(f"{amt:,} — {label}")
                 l.setObjectName("tier")
                 grid.addWidget(l, i + 1, col)
@@ -2040,7 +2088,7 @@ class MainWindow(QWidget):
             items = sorted((amt, fid) for amt, fid in self.adapter.reward_tiers.items()
                            if self.adapter.feature_category(fid) == cat)
             for i, (amt, fid) in enumerate(items):
-                label = self.adapter.FEATURES.get(fid, fid)
+                label = self.adapter.feature_label(fid)
                 l = QLabel(f"{amt:,} — {label}")
                 l.setObjectName("tier")
                 self.tiers_grid.addWidget(l, i + 1, col)
@@ -2058,7 +2106,7 @@ class MainWindow(QWidget):
             amt, fid = item
             return (1 if self.adapter.feature_category(fid) == "server" else 0, amt)
         for amt, fid in sorted(self.adapter.reward_tiers.items(), key=_order):
-            label = self.adapter.FEATURES.get(fid, fid)
+            label = self.adapter.feature_label(fid)
             if self.adapter.feature_category(fid) == "server":
                 label += "  (서버)"
             self.test_combo.addItem(f"{amt:,} — {label}", amt)
@@ -2176,7 +2224,7 @@ class MainWindow(QWidget):
         feature_id = self.adapter.reward_tiers.get(amount, "")
         self.adapter.write(amount, feature_id, sender, message)
         if feature_id:
-            label = self.adapter.FEATURES.get(feature_id, feature_id)
+            label = self.adapter.feature_label(feature_id)
             self._log(f"{sender}  {amount:,}원  →  {label}")
         else:
             self._log(f"{sender}  {amount:,}원  (통계만)")
@@ -2202,7 +2250,7 @@ class MainWindow(QWidget):
             self._log("경로가 없어 테스트 불가. 경로를 먼저 지정해 주세요."); return
         feature_id = self.adapter.reward_tiers.get(amt, "")
         self.adapter.write(amt, feature_id, "테스트후원자", "테스트")
-        label = self.adapter.FEATURES.get(feature_id, feature_id or "?")
+        label = self.adapter.feature_label(feature_id, feature_id or "?")
         self._log(f"[테스트] {amt:,}원 적용  →  {label}")
 
     def _log(self, msg):
