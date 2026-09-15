@@ -75,7 +75,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.8.0"
+VERSION = "v5.8.1"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -3136,7 +3136,8 @@ class UpdateDialog(QDialog):
                 flags = 0x00000008 | 0x08000000    # DETACHED_PROCESS | CREATE_NO_WINDOW
             subprocess.Popen([sys.executable, "--updated"],
                              cwd=os.path.dirname(sys.executable) or None,
-                             close_fds=True, creationflags=flags)
+                             close_fds=True, creationflags=flags,
+                             env=_fresh_instance_env())
         except Exception as e:
             QMessageBox.warning(
                 self, "재시작 실패",
@@ -3145,6 +3146,22 @@ class UpdateDialog(QDialog):
         self.accept()
         QApplication.quit()
         os._exit(0)      # Qt 이벤트루프/백그라운드 스레드가 종료를 붙잡지 않게 즉시 탈출
+
+
+def _fresh_instance_env():
+    """재시작용 환경변수. PyInstaller onefile 은 현재 프로세스의 임시 압축해제 폴더
+       (_MEIxxxx) 정보를 환경변수로 남기는데, 이걸 그대로 물려주면 새 exe 가 자기 파일을
+       풀지 않고 "곧 지워질" 구 버전 폴더를 재사용하려다 Qt 플러그인을 못 찾는다
+       ("no Qt platform plugin could be initialized"). 독립 실행으로 띄우도록 비운다."""
+    env = os.environ.copy()
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"      # PyInstaller 6.9+ 공식 방식
+    meipass = getattr(sys, "_MEIPASS", None)
+    for k in list(env):
+        if k.startswith("_PYI_") or k == "_MEIPASS2":   # 구버전 PyInstaller 대비
+            env.pop(k, None)
+        elif meipass and k.upper().startswith("QT_") and meipass.lower() in env[k].lower():
+            env.pop(k, None)                         # 구 임시폴더를 가리키는 Qt 경로
+    return env
 
 
 def acquire_single_instance(retry: bool):
