@@ -75,7 +75,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.8.1"
+VERSION = "v5.8.2"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -1665,6 +1665,8 @@ QLabel#welcome { font-size:20px; color:#e8e8ea; }
 QLabel#err   { font-size:18px; font-weight:bold; color:#e24b4a; }
 QLabel#linkok { color:#5dcaa5; font-weight:bold; }
 QFrame#sep { background:rgba(255,255,255,0.08); max-height:1px; }
+QProgressBar { background:#1b1d22; border:1px solid rgba(255,255,255,0.10); border-radius:5px; min-height:10px; max-height:10px; }
+QProgressBar::chunk { background:#1d9e75; border-radius:4px; }
 """
 
 
@@ -3036,6 +3038,7 @@ class UpdateDialog(QDialog):
             v.addWidget(warn)
 
         self.bar = QProgressBar(); self.bar.setRange(0, 100); self.bar.setValue(0)
+        self.bar.setTextVisible(False)   # 얇은 테마 바 -- 퍼센트는 아래 상태 문구에 표시
         self.bar.hide()
         v.addWidget(self.bar)
 
@@ -3098,8 +3101,8 @@ class UpdateDialog(QDialog):
         if total > 0:
             self.bar.setRange(0, 100)
             self.bar.setValue(int(got * 100 / total))
-            self.status.setText("다운로드 중…  %.1f / %.1f MB"
-                                % (got / 1048576.0, total / 1048576.0))
+            self.status.setText("다운로드 중…  %.1f / %.1f MB  (%d%%)"
+                                % (got / 1048576.0, total / 1048576.0, got * 100 // total))
         else:
             self.bar.setRange(0, 0)   # 전체 크기를 모르면 무한 진행바
             self.status.setText("다운로드 중…  %.1f MB" % (got / 1048576.0,))
