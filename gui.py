@@ -75,7 +75,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.8.2"
+VERSION = "v5.8.3"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -846,7 +846,7 @@ class ZomboidAdapter(GameAdapter):
         "instant_heal":					"즉시 치유",
         "fire_support":					"화력지원 룰렛",
         "missile":						"미사일 폭격",
-        "zombie_rain":					"좀비 레인",
+        "zombie_rain":					"좀비 공습",
         "rise_up_dead_man":				"강령술",
 
         "medical_box":					"의약품 랜덤박스",
