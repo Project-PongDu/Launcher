@@ -73,7 +73,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.9.0"
+VERSION = "v5.9.1"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -1053,7 +1053,7 @@ def load_server_tiers():
 # ═══════════════════════════════════════════════════════════════════════════════
 OPT_BACKUP_DIRNAME = "puppet_opt_backup"
 OPT_STATE_FILE = "pongdu_opt_state.json"
-OPTIMIZER_URL = "https://github.com/Project-PongDu/PZ-Optimzer/releases/latest"
+OPTIMIZER_URL = "https://github.com/Project-PongDu/PZ-Optimizer/releases/latest"
 PZ_APPID = "108600"
 
 
