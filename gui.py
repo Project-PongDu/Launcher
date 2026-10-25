@@ -73,7 +73,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.9.2"
+VERSION = "v5.9.3"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -1051,6 +1051,7 @@ def load_server_tiers():
 #      xmx_mb          int                  → ProjectZomboid64.json 의 -Xmx 대조
 #                                             (PZ OP 가 힙을 관리 중이면 = json 에 -Dpzopt.heap= 표식이 있으면 건너뜀)
 #      graalvm_version str + vmargs list    → jre64/release 의 GRAALVM_VERSION + json 인자 대조
+#      vmargs          list (단독)          → json 인자 대조 (AlwaysPreTouch 등, PZ OP 가 힙 관리 중이면 건너뜀)
 # ═══════════════════════════════════════════════════════════════════════════════
 OPT_BACKUP_DIRNAME = "puppet_opt_backup"
 OPT_STATE_FILE = "pongdu_opt_state.json"
@@ -1197,6 +1198,9 @@ def _opt_record_ok(game_dir: Path, rec: dict, vmargs: list) -> bool:
             if _read_release(game_dir / "jre64").get("GRAALVM_VERSION") != rec["graalvm_version"]:
                 return False
             if not all(a in vmargs for a in (rec.get("vmargs") or [])):
+                return False
+        elif rec.get("vmargs") and not pzopt_heap:
+            if not all(a in vmargs for a in rec["vmargs"]):
                 return False
     except Exception:
         return False
