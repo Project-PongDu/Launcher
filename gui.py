@@ -73,7 +73,7 @@ from PyQt5.QtWidgets import (
 # 런처(클라이언트)에는 화이트리스트 검사 코드가 존재하지 않는다 — 우회할 표면 자체가 없음.
 
 
-VERSION = "v5.9.1"
+VERSION = "v5.9.2"
 
 # ── 치지직 공식 Open API 애플리케이션 정보 ─────────────────────────────────────
 # 치지직 개발자센터(developers.naver.com/chzzk)에서 앱 등록 후 발급값을 채운다.
@@ -1049,6 +1049,7 @@ def load_server_tiers():
 #  - 레코드 필드만 보고 판정하므로 Optimizer 에 항목이 추가돼도 런처 수정은 필요 없다:
 #      files           {상대경로: sha256}   → 파일 해시 대조
 #      xmx_mb          int                  → ProjectZomboid64.json 의 -Xmx 대조
+#                                             (PZ OP 가 힙을 관리 중이면 = json 에 -Dpzopt.heap= 표식이 있으면 건너뜀)
 #      graalvm_version str + vmargs list    → jre64/release 의 GRAALVM_VERSION + json 인자 대조
 # ═══════════════════════════════════════════════════════════════════════════════
 OPT_BACKUP_DIRNAME = "puppet_opt_backup"
@@ -1188,7 +1189,9 @@ def _opt_record_ok(game_dir: Path, rec: dict, vmargs: list) -> bool:
         for rel, digest in (rec.get("files") or {}).items():
             if _file_sha256(game_dir / rel) != digest:
                 return False
-        if "xmx_mb" in rec and f"-Xmx{int(rec['xmx_mb'])}m" not in vmargs:
+        # PZ OP 게임 내 설정이 힙을 바꾼 경우는 '풀림'이 아니라 의도된 상태다
+        pzopt_heap = any(str(a).startswith("-Dpzopt.heap=") for a in vmargs)
+        if "xmx_mb" in rec and not pzopt_heap and f"-Xmx{int(rec['xmx_mb'])}m" not in vmargs:
             return False
         if rec.get("graalvm_version"):
             if _read_release(game_dir / "jre64").get("GRAALVM_VERSION") != rec["graalvm_version"]:
